@@ -7,6 +7,7 @@ import { DEFAULT_LOCALE, SUPPORTED_LOCALES, publicRoutePath } from "./data/landi
 import { BotsPage } from "./pages/BotsPage.tsx";
 import { ActivityPage } from "./pages/bot/ActivityPage.tsx";
 import { BotLayout } from "./pages/bot/BotLayout.tsx";
+import { BillingPage } from "./pages/bot/BillingPage.tsx";
 import { OverviewPage } from "./pages/bot/OverviewPage.tsx";
 import { SettingsPage } from "./pages/bot/SettingsPage.tsx";
 import "./index.css";
@@ -41,6 +42,7 @@ const router = createBrowserRouter([
             }),
           },
           { path: "activity", element: <ActivityPage /> },
+          { path: "billing", element: <BillingPage /> },
           { path: "settings", element: <SettingsPage /> },
         ],
       },

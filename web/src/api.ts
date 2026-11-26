@@ -8,6 +8,12 @@ import type {
   User,
 } from "./types.ts";
 
+export interface BillingStatus {
+  plan: "free" | "pro";
+  status: string | null;
+  cancel_at_period_end: boolean;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly location?: ErrorLocation;
@@ -73,6 +79,10 @@ export const api = {
   saveProgram: (id: string, workspace: object, program: Program) =>
     request<void>("PUT", `/bots/${id}/program`, { workspace, program }),
   executions: (id: string) => request<ExecutionEntry[]>("GET", `/bots/${id}/executions`),
+  billingStatus: (id: string) => request<BillingStatus>("GET", `/billing/bots/${id}`),
+  checkout: (botId: string) =>
+    request<{ url: string }>("POST", "/billing/checkout", { bot_id: botId }),
+  billingPortal: () => request<{ url: string }>("POST", "/billing/portal"),
 };
 
 export const LOGIN_URL = "/api/auth/login";
