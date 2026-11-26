@@ -4,7 +4,8 @@ Build Discord bots with blocks. Disblock hosts them.
 
 A user signs in with Discord, pastes a bot token, and assembles the bot's
 behaviour in a block editor: slash commands, member joins and message triggers,
-with replies, messages, reactions and roles as actions. Saving pushes the slash
+with replies, messages, reactions and roles as actions, conditions, and
+variables saved per member or per server. Saving pushes the slash
 commands to Discord and swaps the new program into the running bot, without
 reconnecting it.
 
@@ -18,7 +19,7 @@ Neon               ──  Postgres
 
 | Path | What it is |
 | --- | --- |
-| `crates/program` | Program format, validation against Discord's limits, interpreter. Pure, no I/O. |
+| `crates/program` | Program format, validation against Discord's limits, and a pure interpreter that plans effects and variable writes. No I/O. |
 | `crates/server` | API, Discord login, encrypted bot tokens, bot runtime (twilight), batched execution history. |
 | `migrations` | SQL schema, applied at startup. |
 | `web` | Vite+ React app, the Blockly editor, and `worker/` for Cloudflare. |
@@ -58,9 +59,10 @@ Requirements: Rust 1.98+, Node 26+, pnpm, Docker, `sqlx-cli`.
 
 4. Open <http://localhost:5173>.
 
-Checks:
+Checks (the server tests create throwaway databases on the local Postgres):
 
 ```bash
+set -a; source .env; set +a
 cargo clippy --workspace --all-targets -- -W clippy::pedantic && cargo test --workspace
 cd web && pnpm exec vp check && pnpm exec vp test
 ```

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, discord_id, username) VALUES ($1, '1', 'owner')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "89a4b8ffd550136477c000bb23f7d66e36b040d677abbb9edcb4ff2fb786eda4"
+}

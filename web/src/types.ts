@@ -5,7 +5,7 @@ export interface Program {
 
 export interface Handler {
   trigger: Trigger;
-  actions: Action[];
+  actions: Statement[];
 }
 
 export type Trigger =
@@ -22,12 +22,45 @@ export interface CommandOption {
   required: boolean;
 }
 
-export type Action =
+/** Where a variable lives: this run only, the member, or the whole server. */
+export type Scope = "local" | "member" | "server";
+
+export type MathOp = "add" | "subtract" | "multiply" | "divide" | "modulo";
+
+export type CompareOp =
+  | "equal"
+  | "not_equal"
+  | "less"
+  | "less_or_equal"
+  | "greater"
+  | "greater_or_equal"
+  | "contains";
+
+export type Statement =
   | { type: "reply"; content: string; ephemeral: boolean }
   | { type: "send_message"; channel_id: string; content: string }
   | { type: "add_role"; role_id: string }
   | { type: "remove_role"; role_id: string }
-  | { type: "react"; emoji: string };
+  | { type: "react"; emoji: string }
+  | { type: "if"; condition: Expr; then: Statement[]; else: Statement[] }
+  | { type: "set_variable"; scope: Scope; name: string; value: Expr }
+  | { type: "change_variable"; scope: Scope; name: string; by: Expr }
+  | { type: "wait"; seconds: number }
+  | { type: "stop" };
+
+export type Expr =
+  | { type: "text"; value: string }
+  | { type: "number"; value: number }
+  | { type: "boolean"; value: boolean }
+  | { type: "variable"; scope: Scope; name: string }
+  | { type: "option"; name: string }
+  | { type: "random"; min: Expr; max: Expr }
+  | { type: "math"; op: MathOp; left: Expr; right: Expr }
+  | { type: "compare"; op: CompareOp; left: Expr; right: Expr }
+  | { type: "and"; left: Expr; right: Expr }
+  | { type: "or"; left: Expr; right: Expr }
+  | { type: "not"; value: Expr }
+  | { type: "has_role"; role_id: string };
 
 export interface User {
   id: string;

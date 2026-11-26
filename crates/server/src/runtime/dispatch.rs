@@ -1,9 +1,11 @@
 //! Turns gateway events into program executions and performs their effects.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use disblock_program::{CompiledProgram, Context, Effect, EmojiRef, Event, EventKind, Execution};
+use disblock_program::{
+    CompiledProgram, Context, Effect, EmojiRef, Event, EventKind, Execution, Random, SavedVariables,
+};
 use twilight_http::api_error::ApiError as DiscordApiError;
 use twilight_http::error::ErrorType;
 use twilight_http::request::channel::reaction::RequestReactionType;
@@ -18,13 +20,58 @@ use twilight_model::http::interaction::{
 };
 use twilight_model::id::Id;
 use twilight_model::id::marker::{
-    ChannelMarker, GuildMarker, InteractionMarker, MessageMarker, UserMarker,
+    ChannelMarker, GuildMarker, InteractionMarker, MessageMarker, RoleMarker, UserMarker,
 };
 use twilight_model::user::User;
 use twilight_util::builder::interaction_response::ChannelMessageBuilder;
 
 use super::BotContext;
 use super::log::Record;
+use super::variables;
+
+/// Randomness for the `random` block.
+struct ThreadRandom;
+
+impl Random for ThreadRandom {
+    fn between(&mut self, min: i64, max: i64) -> i64 {
+        rand::random_range(min..=max)
+    }
+}
+
+/// Load the variables the event's member and server saved, when the program
+/// uses any, then plan every handler the event matches.
+async fn plan(
+    bot: &BotContext,
+    program: &CompiledProgram,
+    event: &Event<'_>,
+) -> Result<Vec<Execution>, String> {
+    let saved = match event.context.guild_id {
+        Some(guild_id) if program.uses_saved_variables() => {
+            variables::load(&bot.db, bot.id, guild_id, event.context.user_id)
+                .await
+                .map_err(|error| {
+                    tracing::error!(bot = %bot.id, %error, "failed to load variables");
+                    "could not load saved variables".to_owned()
+                })?
+        }
+        _ => SavedVariables::default(),
+    };
+    Ok(program.handle(event, &saved, &mut ThreadRandom))
+}
+
+/// Record a run that could not even start.
+fn record_failure(bot: &BotContext, trigger: &str, error: String) {
+    bot.log.record(Record {
+        bot_id: bot.id,
+        trigger: trigger.to_owned(),
+        error: Some(error),
+        duration: Duration::ZERO,
+    });
+}
+
+fn role_ids(roles: &[Id<RoleMarker>]) -> Vec<u64> {
+    roles.iter().map(|role| role.get()).collect()
+}
 
 pub async fn handle(bot: Arc<BotContext>, program: Arc<CompiledProgram>, event: GatewayEvent) {
     match event {
@@ -60,16 +107,27 @@ async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction
         .iter()
         .filter_map(|option| render_option(&option.value).map(|value| (option.name.clone(), value)))
         .collect();
+    let roles = interaction
+        .member
+        .as_ref()
+        .map(|member| role_ids(&member.roles))
+        .unwrap_or_default();
     let context = context_for(
         user,
+        &roles,
         interaction.guild_id,
         interaction.channel.as_ref().map(|c| c.id),
         &options,
     );
-    let executions = program.handle(&Event {
-        kind: EventKind::SlashCommand { name: &data.name },
-        context,
-    });
+    let planned = plan(
+        bot,
+        program,
+        &Event {
+            kind: EventKind::SlashCommand { name: &data.name },
+            context,
+        },
+    )
+    .await;
 
     let mut reply = Reply::Interaction(InteractionReply {
         id: interaction.id,
@@ -81,6 +139,14 @@ async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction
         user_id: user.id,
     };
 
+    let executions = match planned {
+        Ok(executions) => executions,
+        Err(error) => {
+            reply.finish(bot, Some(FAILURE_NOTICE)).await;
+            record_failure(bot, &format!("/{}", data.name), error);
+            return;
+        }
+    };
     let Some(execution) = executions.into_iter().next() else {
         // Discord still shows a command that was removed a moment ago.
         reply
@@ -100,16 +166,23 @@ async fn on_member_add(
     if member.user.bot {
         return;
     }
-    let context = context_for(&member.user, Some(guild_id), None, &[]);
+    let roles = role_ids(&member.roles);
+    let context = context_for(&member.user, &roles, Some(guild_id), None, &[]);
     let target = Target {
         guild_id: Some(guild_id),
         user_id: member.user.id,
     };
-    for execution in program.handle(&Event {
+    let event = Event {
         kind: EventKind::MemberJoin,
         context,
-    }) {
-        run(bot, execution, target, Reply::Unavailable).await;
+    };
+    match plan(bot, program, &event).await {
+        Ok(executions) => {
+            for execution in executions {
+                run(bot, execution, target, Reply::Unavailable).await;
+            }
+        }
+        Err(error) => record_failure(bot, "member join", error),
     }
 }
 
@@ -118,8 +191,14 @@ async fn on_message(bot: &BotContext, program: &CompiledProgram, message: &Messa
     if message.author.bot || message.guild_id.is_none() {
         return;
     }
+    let roles = message
+        .member
+        .as_ref()
+        .map(|member| role_ids(&member.roles))
+        .unwrap_or_default();
     let context = context_for(
         &message.author,
+        &roles,
         message.guild_id,
         Some(message.channel_id),
         &[],
@@ -128,22 +207,29 @@ async fn on_message(bot: &BotContext, program: &CompiledProgram, message: &Messa
         guild_id: message.guild_id,
         user_id: message.author.id,
     };
-    for execution in program.handle(&Event {
+    let event = Event {
         kind: EventKind::Message {
             content: &message.content,
         },
         context,
-    }) {
-        let reply = Reply::Message {
-            channel_id: message.channel_id,
-            message_id: message.id,
-        };
-        run(bot, execution, target, reply).await;
+    };
+    match plan(bot, program, &event).await {
+        Ok(executions) => {
+            for execution in executions {
+                let reply = Reply::Message {
+                    channel_id: message.channel_id,
+                    message_id: message.id,
+                };
+                run(bot, execution, target, reply).await;
+            }
+        }
+        Err(error) => record_failure(bot, "message", error),
     }
 }
 
 fn context_for<'a>(
     user: &'a User,
+    roles: &'a [u64],
     guild_id: Option<Id<GuildMarker>>,
     channel_id: Option<Id<ChannelMarker>>,
     options: &'a [(String, String)],
@@ -151,6 +237,7 @@ fn context_for<'a>(
     Context {
         user_id: user.id.get(),
         user_name: user.global_name.as_deref().unwrap_or(&user.name),
+        roles,
         guild_id: guild_id.map(Id::get),
         channel_id: channel_id.map(Id::get),
         options,
@@ -174,22 +261,32 @@ struct Target {
     user_id: Id<UserMarker>,
 }
 
+const FAILURE_NOTICE: &str = "Something went wrong while running this command.";
+
 async fn run(bot: &BotContext, execution: Execution, target: Target, mut reply: Reply<'_>) {
     let started = Instant::now();
-    reply.prepare(bot, &execution.effects).await;
+    let mut error = save_writes(bot, &execution, target).await.err();
 
-    let mut error = None;
-    for effect in &execution.effects {
-        if let Err(message) = perform(bot, effect, target, &mut reply).await {
-            error = Some(message);
-            break;
+    if error.is_none() {
+        reply.prepare(bot, &execution.effects).await;
+        for effect in &execution.effects {
+            if let Err(message) = perform(bot, effect, target, &mut reply).await {
+                error = Some(message);
+                break;
+            }
         }
     }
+    // The plan stopped early: its effects ran, then report why it stopped.
+    if error.is_none() {
+        error = execution
+            .error
+            .as_ref()
+            .map(|reason| format!("stopped: {reason}"));
+    }
 
-    let notice = error
-        .as_ref()
-        .map(|_| "Something went wrong while running this command.");
-    reply.finish(bot, notice).await;
+    reply
+        .finish(bot, error.as_ref().map(|_| FAILURE_NOTICE))
+        .await;
 
     bot.log.record(Record {
         bot_id: bot.id,
@@ -197,6 +294,32 @@ async fn run(bot: &BotContext, execution: Execution, target: Target, mut reply: 
         error,
         duration: started.elapsed(),
     });
+}
+
+/// Saved before the effects run, so a slow effect cannot hold stale values.
+async fn save_writes(
+    bot: &BotContext,
+    execution: &Execution,
+    target: Target,
+) -> Result<(), String> {
+    if execution.writes.is_empty() {
+        return Ok(());
+    }
+    let guild_id = target
+        .guild_id
+        .ok_or_else(|| "variables can only be saved inside a server".to_owned())?;
+    variables::save(
+        &bot.db,
+        bot.id,
+        guild_id.get(),
+        target.user_id.get(),
+        &execution.writes,
+    )
+    .await
+    .map_err(|error| {
+        tracing::error!(bot = %bot.id, %error, "failed to save variables");
+        "could not save variables".to_owned()
+    })
 }
 
 async fn perform(
@@ -214,6 +337,10 @@ async fn perform(
 
     match effect {
         Effect::Reply { content, ephemeral } => reply.send(bot, content, *ephemeral).await,
+        Effect::Wait { seconds } => {
+            tokio::time::sleep(Duration::from_secs(u64::from(*seconds))).await;
+            Ok(())
+        }
         Effect::SendMessage {
             channel_id,
             content,

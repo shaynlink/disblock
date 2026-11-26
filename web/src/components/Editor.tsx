@@ -4,7 +4,7 @@ import { Check, Loader2, Save } from "lucide-react";
 import { useBlocker } from "react-router";
 import { api } from "../api.ts";
 import { createTheme, registerBlocks, starterWorkspace, toolbox } from "../blocks/blocks.ts";
-import { generateProgram } from "../blocks/generate.ts";
+import { GenerateError, generateProgram } from "../blocks/generate.ts";
 import type { BotDetail, Program } from "../types.ts";
 import { Button } from "./ui.tsx";
 
@@ -84,9 +84,29 @@ export function Editor({
     if (!editor) {
       return;
     }
+    for (const block of editor.getAllBlocks(false)) {
+      block.setWarningText(null);
+    }
+    let program: Program;
+    try {
+      program = generateProgram(editor);
+    } catch (error) {
+      if (!(error instanceof GenerateError)) {
+        throw error;
+      }
+      // Point at the incomplete block instead of saving.
+      const block = editor.getBlockById(error.blockId);
+      if (block) {
+        block.setWarningText(error.message);
+        Blockly.common.setSelected(block);
+        editor.centerOnBlock(block.id);
+      }
+      setSave({ kind: "error", message: error.message });
+      return;
+    }
+
     setSave({ kind: "saving" });
     const state = Blockly.serialization.workspaces.save(editor);
-    const program = generateProgram(editor);
     try {
       await api.saveProgram(bot.id, state, program);
       savedSnapshot.current = JSON.stringify(state);
@@ -142,8 +162,8 @@ export function Editor({
           <p className="text-sm text-muted-foreground">
             Drag a trigger from the left, then stack actions inside it. Messages accept{" "}
             <code className="text-xs">{"{user}"}</code>,{" "}
-            <code className="text-xs">{"{channel}"}</code> and{" "}
-            <code className="text-xs">{"{option.NAME}"}</code>.
+            <code className="text-xs">{"{option.NAME}"}</code> and saved variables like{" "}
+            <code className="text-xs">{"{member:points}"}</code>.
           </p>
         </div>
         <div className="flex items-center gap-3">

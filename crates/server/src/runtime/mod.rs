@@ -4,6 +4,7 @@
 mod commands;
 mod dispatch;
 pub mod log;
+mod variables;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,6 +56,7 @@ pub struct BotContext {
     pub id: Uuid,
     pub application_id: Id<ApplicationMarker>,
     pub http: Client,
+    db: PgPool,
     log: ExecutionLog,
 }
 
@@ -132,6 +134,7 @@ impl Runtime {
             id,
             application_id: loaded.application_id,
             http,
+            db: self.inner.db.clone(),
             log: self.inner.log.clone(),
         });
         let task = tokio::spawn(run_bot(
