@@ -18,6 +18,7 @@ describe("landing page i18n and SSR", () => {
     expect(localeFromPath("/fr")).toBe("fr");
     expect(localeFromPath("/fr/")).toBe("fr");
     expect(localeFromPath("/bots/123")).toBe("en");
+    expect(publicRouteFromPath("/legal")).toEqual({ page: "legal", locale: "en" });
 
     expect(publicRouteFromPath("/")).toEqual({ page: "landing", locale: "en" });
     expect(publicRouteFromPath("/privacy")).toEqual({ page: "privacy", locale: "en" });
@@ -45,7 +46,7 @@ describe("landing page i18n and SSR", () => {
         expect(html.replaceAll("&#x27;", "'")).toContain(item.question);
       }
 
-      for (const kind of ["privacy", "terms"] as const) {
+      for (const kind of ["privacy", "terms", "legal"] as const) {
         const legalHtml = renderPublicPageHtml(kind, locale);
         expect(legalHtml.match(/<h1\b/g)?.length).toBe(1);
         expect(legalHtml.replaceAll("&#x27;", "'")).toContain(LEGAL_COPY[locale][kind].title);

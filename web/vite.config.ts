@@ -33,6 +33,7 @@ interface PrerenderModule {
     {
       privacy: { seoTitle: string; seoDescription: string };
       terms: { seoTitle: string; seoDescription: string };
+      legal: { seoTitle: string; seoDescription: string };
     }
   >;
   localeUrl: (siteUrl: string, locale: string, page?: string) => string;
@@ -59,17 +60,11 @@ function pageSeoCopy(
   if (!landing || !legal) {
     throw new Error(`Missing locale copy for "${locale}"`);
   }
-  if (page === "privacy") {
+  if (page !== "landing") {
+    const document = legal[page as "privacy" | "terms" | "legal"];
     return {
-      title: legal.privacy.seoTitle,
-      description: legal.privacy.seoDescription,
-      ogImageAlt: landing.seo.ogImageAlt,
-    };
-  }
-  if (page === "terms") {
-    return {
-      title: legal.terms.seoTitle,
-      description: legal.terms.seoDescription,
+      title: document.seoTitle,
+      description: document.seoDescription,
       ogImageAlt: landing.seo.ogImageAlt,
     };
   }

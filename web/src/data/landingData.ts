@@ -2,9 +2,14 @@ export const DEFAULT_LOCALE = "en" as const;
 export const SUPPORTED_LOCALES = ["en", "fr"] as const;
 
 export type Locale = (typeof SUPPORTED_LOCALES)[number];
-export type PublicPageKind = "landing" | "privacy" | "terms";
+export type PublicPageKind = "landing" | "privacy" | "terms" | "legal";
 
-export const PUBLIC_PAGE_KINDS: readonly PublicPageKind[] = ["landing", "privacy", "terms"];
+export const PUBLIC_PAGE_KINDS: readonly PublicPageKind[] = [
+  "landing",
+  "privacy",
+  "terms",
+  "legal",
+];
 
 export interface LocaleMeta {
   code: Locale;
@@ -84,14 +89,14 @@ export function publicRouteFromPath(
     if (segments.length === 1) {
       return { page: "landing", locale: first };
     }
-    if (segments.length === 2 && (segments[1] === "privacy" || segments[1] === "terms")) {
-      return { page: segments[1], locale: first };
+    if (segments.length === 2 && ["privacy", "terms", "legal"].includes(segments[1] ?? "")) {
+      return { page: segments[1] as PublicPageKind, locale: first };
     }
     return null;
   }
 
-  if (segments.length === 1 && (first === "privacy" || first === "terms")) {
-    return { page: first, locale: DEFAULT_LOCALE };
+  if (segments.length === 1 && ["privacy", "terms", "legal"].includes(first)) {
+    return { page: first as PublicPageKind, locale: DEFAULT_LOCALE };
   }
 
   return null;
@@ -165,6 +170,7 @@ export interface LegalDocumentCopy {
 
 export interface LegalCopy {
   backToHome: string;
+  legal: LegalDocumentCopy;
   privacy: LegalDocumentCopy;
   terms: LegalDocumentCopy;
 }
@@ -189,6 +195,7 @@ export interface LandingCopy {
     faq: string;
     privacy: string;
     terms: string;
+    legal: string;
     signIn: string;
     openDashboard: string;
   };
@@ -295,6 +302,7 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
       faq: "FAQ",
       privacy: "Privacy",
       terms: "Terms",
+      legal: "Legal notice",
       signIn: "Sign in with Discord",
       openDashboard: "Open dashboard",
     },
@@ -599,6 +607,7 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
       faq: "FAQ",
       privacy: "Confidentialité",
       terms: "Conditions",
+      legal: "Mentions légales",
       signIn: "Connexion avec Discord",
       openDashboard: "Ouvrir le tableau de bord",
     },
@@ -888,6 +897,28 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
 export const LEGAL_COPY: Record<Locale, LegalCopy> = {
   en: {
     backToHome: "Back to Disblock",
+    legal: {
+      seoTitle: "Legal Notice — Disblock",
+      seoDescription: "Publisher, hosting, contact, and consumer information for Disblock.",
+      title: "Legal Notice",
+      updatedLabel: "Last updated November 26, 2026",
+      intro:
+        "This page identifies the publisher and technical hosts of Disblock. The highlighted publisher fields are deployment configuration and must be completed before the service is publicly offered.",
+      sections: [
+        {
+          heading: "Service and intellectual property",
+          paragraphs: [
+            "Disblock is a visual Discord bot builder and hosting service. Unless otherwise stated, its software, interface, text, and visual elements are protected and may not be reused without permission.",
+          ],
+        },
+        {
+          heading: "Contact and consumer disputes",
+          paragraphs: [
+            "Contact the publisher using the address shown above for support, privacy requests, or complaints. Where consumer mediation applies, the designated mediator and its contact details are shown above.",
+          ],
+        },
+      ],
+    },
     privacy: {
       seoTitle: "Privacy Policy — Disblock",
       seoDescription:
@@ -927,13 +958,20 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
             "Disblock runs its web interface on Cloudflare, its API and bot gateway runtime on Fly.io (EU region), and its PostgreSQL database on Neon, exchanging data with the Discord API strictly to authenticate you and run your bots.",
           ],
         },
+        {
+          heading: "5. Purposes, legal bases, and your rights",
+          paragraphs: [
+            "We process account and bot data to perform the service you request; limited security and operational logs may also be processed for our legitimate interest in protecting the service. Billing data is processed by Stripe to perform the subscription contract.",
+            "You can download your data or delete your account from Account & data. You may also request access, correction, restriction, objection, or portability through the publisher contact in the Legal Notice. We answer rights requests within the applicable legal timeframe and you may complain to the competent supervisory authority.",
+          ],
+        },
       ],
     },
     terms: {
-      seoTitle: "Terms of Service — Disblock",
+      seoTitle: "Terms of Service & Sale — Disblock",
       seoDescription:
         "Terms governing your use of Disblock's visual Discord bot builder and 24/7 beta hosting.",
-      title: "Terms of Service",
+      title: "Terms of Service and Sale",
       updatedLabel: "Beta notice — Last updated November 26, 2026",
       intro:
         "By signing in to Disblock and connecting a Discord bot, you agree to the terms below covering the beta service.",
@@ -966,11 +1004,40 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
             "We aim for continuous 24/7 operation, but beta hosting is provided as-is without a formal SLA. We may suspend bots or accounts that violate these terms or threaten platform stability, and you can disconnect and remove your bots at any time.",
           ],
         },
+        {
+          heading: "5. Pro subscriptions, price, and cancellation",
+          paragraphs: [
+            "Pro is sold per bot through Stripe Checkout. The applicable price, taxes, renewal interval, and payment terms are shown before you place an order and in the Stripe customer portal. Subscription management and cancellation are available from the Billing page.",
+            "Consumer rights, including withdrawal rights where applicable, are not limited by these terms. Contact the publisher listed in the Legal Notice if you need assistance with an order or a complaint.",
+          ],
+        },
       ],
     },
   },
   fr: {
     backToHome: "Retour à Disblock",
+    legal: {
+      seoTitle: "Mentions légales — Disblock",
+      seoDescription: "Éditeur, hébergement, contact et informations consommateur de Disblock.",
+      title: "Mentions légales",
+      updatedLabel: "Dernière mise à jour le 26 novembre 2026",
+      intro:
+        "Cette page identifie l'éditeur et les hébergeurs techniques de Disblock. Les champs d'identité mis en évidence sont configurés au déploiement et doivent être renseignés avant toute mise à disposition publique.",
+      sections: [
+        {
+          heading: "Service et propriété intellectuelle",
+          paragraphs: [
+            "Disblock est un service de création visuelle et d'hébergement de bots Discord. Sauf indication contraire, son logiciel, son interface, ses textes et ses éléments visuels sont protégés et ne peuvent être réutilisés sans autorisation.",
+          ],
+        },
+        {
+          heading: "Contact et médiation de la consommation",
+          paragraphs: [
+            "Utilisez les coordonnées de l'éditeur affichées ci-dessus pour le support, les demandes relatives aux données ou une réclamation. Lorsqu'elle est applicable, l'identité et les coordonnées du médiateur de la consommation sont affichées ci-dessus.",
+          ],
+        },
+      ],
+    },
     privacy: {
       seoTitle: "Politique de confidentialité — Disblock",
       seoDescription:
@@ -1010,13 +1077,20 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
             "L'interface web est servie via Cloudflare, l'API et le runtime des bots tournent sur Fly.io (région EU) et la base PostgreSQL est hébergée sur Neon, en interaction directe avec l'API Discord pour l'authentification et l'exécution de vos bots.",
           ],
         },
+        {
+          heading: "5. Finalités, bases légales et vos droits",
+          paragraphs: [
+            "Les données de compte et de bot sont traitées pour exécuter le service demandé ; des journaux limités de sécurité et d'exploitation peuvent aussi être traités pour notre intérêt légitime à protéger le service. Les données de facturation sont traitées par Stripe pour l'exécution du contrat d'abonnement.",
+            "Vous pouvez télécharger vos données ou supprimer votre compte dans « Compte et données ». Vous pouvez également demander l'accès, la rectification, la limitation, l'opposition ou la portabilité via le contact indiqué dans les mentions légales. Une réponse est apportée dans les délais légaux applicables ; vous pouvez saisir l'autorité de contrôle compétente.",
+          ],
+        },
       ],
     },
     terms: {
-      seoTitle: "Conditions d'utilisation — Disblock",
+      seoTitle: "CGU et CGV — Disblock",
       seoDescription:
         "Conditions applicables à l'utilisation de l'éditeur visuel de bots Discord Disblock et de l'hébergement bêta 24/7.",
-      title: "Conditions d'utilisation",
+      title: "CGU et CGV",
       updatedLabel: "Version bêta — Dernière mise à jour le 26 novembre 2026",
       intro:
         "En vous connectant à Disblock et en reliant un bot Discord, vous acceptez les présentes conditions liées au service en bêta.",
@@ -1047,6 +1121,13 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
           heading: "4. Disponibilité et résiliation",
           paragraphs: [
             "Nous visons une disponibilité 24/7, mais l'hébergement bêta est fourni en l'état sans engagement SLA formel. Nous pouvons suspendre tout bot ou compte en infraction avec ces conditions, et vous pouvez déconnecter et supprimer vos bots à tout moment.",
+          ],
+        },
+        {
+          heading: "5. Abonnements Pro, prix et résiliation",
+          paragraphs: [
+            "L'offre Pro est souscrite par bot via Stripe Checkout. Le prix applicable, les taxes, la périodicité de renouvellement et les modalités de paiement sont affichés avant la commande puis dans le portail client Stripe. La gestion et la résiliation de l'abonnement sont disponibles depuis la page Facturation.",
+            "Les droits du consommateur, y compris le droit de rétractation lorsqu'il est applicable, ne sont pas limités par les présentes conditions. Contactez l'éditeur indiqué dans les mentions légales pour toute aide concernant une commande ou une réclamation.",
           ],
         },
       ],

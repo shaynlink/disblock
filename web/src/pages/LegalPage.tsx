@@ -14,16 +14,41 @@ import {
 } from "../data/landingData.ts";
 import { syncDocumentSeo } from "../lib/seo.ts";
 import { buttonClass, cn } from "../lib/styles.ts";
+import { LEGAL_ENTITY, LEGAL_HOSTS } from "../data/legalEntity.ts";
 
 export interface LegalPageProps {
   locale: Locale;
-  kind: "privacy" | "terms";
+  kind: "privacy" | "terms" | "legal";
 }
 
 export function LegalPage({ locale, kind }: LegalPageProps) {
   const navCopy = LANDING_COPY[locale];
   const legal = LEGAL_COPY[locale];
   const doc = legal[kind];
+  const entityLabels =
+    locale === "fr"
+      ? {
+          title: "Informations sur l'éditeur",
+          publisher: "Éditeur",
+          legalForm: "Forme juridique",
+          address: "Adresse du siège",
+          registration: "Immatriculation / TVA",
+          contact: "Contact",
+          director: "Directeur de publication",
+          mediator: "Médiateur de la consommation",
+          hosts: "Hébergeurs techniques",
+        }
+      : {
+          title: "Publisher information",
+          publisher: "Publisher",
+          legalForm: "Legal form",
+          address: "Registered address",
+          registration: "Registration / VAT",
+          contact: "Contact",
+          director: "Publication director",
+          mediator: "Consumer mediator",
+          hosts: "Technical hosts",
+        };
   const navigate = useNavigate();
   const langSelectId = useId();
 
@@ -92,6 +117,34 @@ export function LegalPage({ locale, kind }: LegalPageProps) {
         <p className="mt-2 text-sm text-muted-foreground">{doc.updatedLabel}</p>
         <p className="mt-6 text-base leading-relaxed text-muted-foreground">{doc.intro}</p>
 
+        {kind === "legal" && (
+          <Card className="mt-8 border-amber-500/40 bg-amber-500/5 p-6">
+            <h2 className="text-lg font-semibold">{entityLabels.title}</h2>
+            <dl className="mt-4 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[11rem_1fr]">
+              <dt className="font-medium">{entityLabels.publisher}</dt>
+              <dd>{LEGAL_ENTITY.publisher}</dd>
+              <dt className="font-medium">{entityLabels.legalForm}</dt>
+              <dd>{LEGAL_ENTITY.legalForm}</dd>
+              <dt className="font-medium">{entityLabels.address}</dt>
+              <dd>{LEGAL_ENTITY.registeredAddress}</dd>
+              <dt className="font-medium">{entityLabels.registration}</dt>
+              <dd>
+                {LEGAL_ENTITY.registration} · {LEGAL_ENTITY.vatNumber}
+              </dd>
+              <dt className="font-medium">{entityLabels.contact}</dt>
+              <dd>
+                {LEGAL_ENTITY.contactEmail} · {LEGAL_ENTITY.phone}
+              </dd>
+              <dt className="font-medium">{entityLabels.director}</dt>
+              <dd>{LEGAL_ENTITY.publicationDirector}</dd>
+              <dt className="font-medium">{entityLabels.mediator}</dt>
+              <dd>{LEGAL_ENTITY.consumerMediator}</dd>
+              <dt className="font-medium">{entityLabels.hosts}</dt>
+              <dd>{LEGAL_HOSTS.join("; ")}</dd>
+            </dl>
+          </Card>
+        )}
+
         <div className="mt-10 space-y-6">
           {doc.sections.map((section) => (
             <Card key={section.heading} className="p-6">
@@ -122,6 +175,19 @@ export function LegalPage({ locale, kind }: LegalPageProps) {
               <li>
                 <Link to={publicRoutePath(locale, "landing")} className="hover:text-foreground">
                   Disblock
+                </Link>
+              </li>
+              <li>
+                <Link
+                  to={publicRoutePath(locale, "legal")}
+                  aria-current={kind === "legal" ? "page" : undefined}
+                  className={cn(
+                    "hover:text-foreground",
+                    kind === "legal" &&
+                      "font-semibold text-foreground underline underline-offset-4",
+                  )}
+                >
+                  {navCopy.nav.legal}
                 </Link>
               </li>
               <li>
