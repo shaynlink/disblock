@@ -3,9 +3,15 @@ use std::collections::{BTreeMap, HashMap};
 
 use thiserror::Error;
 
-use crate::compile::{Calc, CompiledHandler, CompiledProgram, MAX_WAIT_SECONDS, Step};
-use crate::model::{CompareOp, MathOp, Scope};
-use crate::template::{Context, render};
+use crate::compile::{
+    Calc, CompiledButton, CompiledComponentRow, CompiledEmbed, CompiledHandler, CompiledMessage,
+    CompiledProgram, MAX_BUTTON_LABEL_LEN, MAX_EMBED_AUTHOR_NAME_LEN, MAX_EMBED_DESCRIPTION_LEN,
+    MAX_EMBED_FIELD_NAME_LEN, MAX_EMBED_FIELD_VALUE_LEN, MAX_EMBED_FOOTER_TEXT_LEN,
+    MAX_EMBED_TITLE_LEN, MAX_EMBED_TOTAL_LEN, MAX_SELECT_OPTION_DESCRIPTION_LEN,
+    MAX_SELECT_OPTION_LABEL_LEN, MAX_SELECT_PLACEHOLDER_LEN, MAX_WAIT_SECONDS, Step,
+};
+use crate::model::{ButtonStyle, CompareOp, MathOp, Scope};
+use crate::template::{Context, MAX_MESSAGE_LEN, render_max};
 use crate::value::Value;
 
 /// Effects one run may perform, so a handler cannot flood a server.
@@ -17,7 +23,11 @@ const MAX_TOTAL_WAIT_SECONDS: u32 = 2 * MAX_WAIT_SECONDS;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EmojiRef {
     Unicode(String),
-    Custom { name: String, id: u64 },
+    Custom {
+        name: String,
+        id: u64,
+        animated: bool,
+    },
 }
 
 /// A Discord event, reduced to what programs can react to.
@@ -26,6 +36,8 @@ pub enum EventKind<'a> {
     SlashCommand { name: &'a str },
     MemberJoin,
     Message { content: &'a str },
+    ButtonClick { id: &'a str },
+    SelectMenu { id: &'a str },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,15 +59,142 @@ pub trait Random {
     fn between(&mut self, min: i64, max: i64) -> i64;
 }
 
+/// A rich message ready to send to Discord, with templates rendered.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MessagePayload {
+    pub content: Option<String>,
+    pub embeds: Vec<RenderedEmbed>,
+    pub components: Vec<RenderedComponentRow>,
+}
+
+impl MessagePayload {
+    #[must_use]
+    pub fn text(content: impl Into<String>) -> Self {
+        Self {
+            content: Some(content.into()),
+            embeds: Vec::new(),
+            components: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderedEmbed {
+    pub title: Option<String>,
+    pub url: Option<String>,
+    pub description: Option<String>,
+    pub color: Option<u32>,
+    pub author: Option<RenderedEmbedAuthor>,
+    pub footer: Option<RenderedEmbedFooter>,
+    pub thumbnail_url: Option<String>,
+    pub image_url: Option<String>,
+    pub fields: Vec<RenderedEmbedField>,
+    pub timestamp: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedEmbedAuthor {
+    pub name: String,
+    pub url: Option<String>,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedEmbedFooter {
+    pub text: String,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedEmbedField {
+    pub name: String,
+    pub value: String,
+    pub inline: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderedComponentRow {
+    Buttons(Vec<RenderedButton>),
+    SelectMenu {
+        id: String,
+        placeholder: Option<String>,
+        min_values: u8,
+        max_values: u8,
+        disabled: bool,
+        options: Vec<RenderedSelectOption>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RenderedButton {
+    Action {
+        id: String,
+        label: Option<String>,
+        emoji: Option<EmojiRef>,
+        style: ButtonStyle,
+        disabled: bool,
+    },
+    Link {
+        url: String,
+        label: Option<String>,
+        emoji: Option<EmojiRef>,
+        disabled: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedSelectOption {
+    pub label: String,
+    pub value: String,
+    pub description: Option<String>,
+    pub emoji: Option<EmojiRef>,
+    pub default: bool,
+}
+
 /// A side effect for the runtime to perform, with templates already rendered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    Reply { content: String, ephemeral: bool },
-    SendMessage { channel_id: u64, content: String },
-    AddRole { role_id: u64 },
-    RemoveRole { role_id: u64 },
-    React { emoji: EmojiRef },
-    Wait { seconds: u32 },
+    Reply {
+        message: MessagePayload,
+        ephemeral: bool,
+    },
+    SendMessage {
+        channel_id: u64,
+        message: MessagePayload,
+    },
+    UpdateMessage {
+        message: MessagePayload,
+    },
+    AddRole {
+        role_id: u64,
+    },
+    RemoveRole {
+        role_id: u64,
+    },
+    Timeout {
+        member_id: u64,
+        seconds: u32,
+        reason: Option<String>,
+    },
+    Kick {
+        member_id: u64,
+        reason: Option<String>,
+    },
+    Ban {
+        member_id: u64,
+        reason: Option<String>,
+    },
+    DeleteMessage,
+    DirectMessage {
+        member_id: u64,
+        content: String,
+    },
+    React {
+        emoji: EmojiRef,
+    },
+    Wait {
+        seconds: u32,
+    },
 }
 
 /// A member or server variable to save once the run is planned.
@@ -78,6 +217,18 @@ pub enum RunError {
     TooManyEffects,
     #[error("a run can wait at most {MAX_TOTAL_WAIT_SECONDS} seconds in total")]
     TooMuchWaiting,
+    #[error("a message ended up empty after replacing placeholders")]
+    EmptyMessage,
+    #[error("an embed ended up empty after replacing placeholders")]
+    EmptyEmbed,
+    #[error("embeds exceeded {MAX_EMBED_TOTAL_LEN} characters after replacing placeholders")]
+    EmbedTooLarge,
+    #[error("a button ended up with neither a label nor an emoji")]
+    EmptyButton,
+    #[error("{0} ended up empty after replacing placeholders")]
+    EmptyField(&'static str),
+    #[error("the member ID is invalid after replacing placeholders")]
+    InvalidMemberId,
 }
 
 /// One handler matched by an event: what to do, in order.
@@ -119,6 +270,8 @@ impl CompiledProgram {
                     .map(|matcher| matcher.handler)
                     .collect()
             }
+            EventKind::ButtonClick { id } => self.buttons.get(id).copied().into_iter().collect(),
+            EventKind::SelectMenu { id } => self.selects.get(id).copied().into_iter().collect(),
         };
 
         matched
@@ -189,22 +342,26 @@ impl<R: Random> Runner<'_, R> {
 
     fn step(&mut self, step: &Step) -> Result<Flow, RunError> {
         match step {
-            Step::Reply { content, ephemeral } => {
-                let content = self.render(content);
+            Step::Reply { message, ephemeral } => {
+                let message = self.message(message, true)?;
                 self.emit(Effect::Reply {
-                    content,
+                    message,
                     ephemeral: *ephemeral,
                 })?;
             }
             Step::SendMessage {
                 channel_id,
-                content,
+                message,
             } => {
-                let content = self.render(content);
+                let message = self.message(message, true)?;
                 self.emit(Effect::SendMessage {
                     channel_id: *channel_id,
-                    content,
+                    message,
                 })?;
+            }
+            Step::UpdateMessage { message } => {
+                let message = self.message(message, false)?;
+                self.emit(Effect::UpdateMessage { message })?;
             }
             Step::AddRole(role_id) => {
                 self.emit(Effect::AddRole { role_id: *role_id })?;
@@ -216,6 +373,28 @@ impl<R: Random> Runner<'_, R> {
                 self.emit(Effect::RemoveRole { role_id: *role_id })?;
                 self.roles.retain(|role| role != role_id);
             }
+            Step::Timeout {
+                member_id,
+                seconds,
+                reason,
+            } => self.emit(Effect::Timeout {
+                member_id: self.member_id(member_id)?,
+                seconds: *seconds,
+                reason: self.render_optional(reason.as_deref(), 512),
+            })?,
+            Step::Kick { member_id, reason } => self.emit(Effect::Kick {
+                member_id: self.member_id(member_id)?,
+                reason: self.render_optional(reason.as_deref(), 512),
+            })?,
+            Step::Ban { member_id, reason } => self.emit(Effect::Ban {
+                member_id: self.member_id(member_id)?,
+                reason: self.render_optional(reason.as_deref(), 512),
+            })?,
+            Step::DeleteMessage => self.emit(Effect::DeleteMessage)?,
+            Step::DirectMessage { member_id, content } => self.emit(Effect::DirectMessage {
+                member_id: self.member_id(member_id)?,
+                content: self.render_required(content, MAX_MESSAGE_LEN, "direct message")?,
+            })?,
             Step::React(emoji) => self.emit(Effect::React {
                 emoji: emoji.clone(),
             })?,
@@ -262,6 +441,7 @@ impl<R: Random> Runner<'_, R> {
             Calc::Option(name) => {
                 Value::Text(self.context.option(name).unwrap_or_default().to_owned())
             }
+            Calc::Selected => Value::Text(self.context.selected.unwrap_or_default().to_owned()),
             Calc::Random(min, max) => {
                 let (a, b) = (number(&self.eval(min)?)?, number(&self.eval(max)?)?);
                 Value::Number(self.random.between(a.min(b), a.max(b)))
@@ -322,7 +502,11 @@ impl<R: Random> Runner<'_, R> {
     }
 
     fn render(&self, template: &str) -> String {
-        render(template, |key| {
+        self.render_max(template, MAX_MESSAGE_LEN)
+    }
+
+    fn render_max(&self, template: &str, max_chars: usize) -> String {
+        render_max(template, max_chars, |key| {
             let variable = |scope| {
                 key.split_once(':')
                     .map(|(_, name)| self.get(scope, name).to_string())
@@ -334,6 +518,244 @@ impl<R: Random> Runner<'_, R> {
                 _ => self.context.builtin(key),
             }
         })
+    }
+
+    fn render_optional(&self, template: Option<&str>, max_chars: usize) -> Option<String> {
+        let rendered = self.render_max(template?, max_chars);
+        (!rendered.trim().is_empty()).then_some(rendered)
+    }
+
+    fn render_required(
+        &self,
+        template: &str,
+        max_chars: usize,
+        field: &'static str,
+    ) -> Result<String, RunError> {
+        let rendered = self.render_max(template, max_chars);
+        if rendered.trim().is_empty() {
+            Err(RunError::EmptyField(field))
+        } else {
+            Ok(rendered)
+        }
+    }
+
+    fn member_id(&self, template: &str) -> Result<u64, RunError> {
+        let rendered = self.render_max(template, 100);
+        parse_member_id(&rendered).ok_or(RunError::InvalidMemberId)
+    }
+
+    fn message(
+        &self,
+        compiled: &CompiledMessage,
+        require_body: bool,
+    ) -> Result<MessagePayload, RunError> {
+        let content = self.render_optional(compiled.content.as_deref(), MAX_MESSAGE_LEN);
+        let mut embeds = Vec::with_capacity(compiled.embeds.len());
+        let mut total_chars = 0usize;
+        for embed in &compiled.embeds {
+            let (rendered, chars) = self.embed(embed)?;
+            total_chars += chars;
+            if total_chars > MAX_EMBED_TOTAL_LEN {
+                return Err(RunError::EmbedTooLarge);
+            }
+            embeds.push(rendered);
+        }
+
+        let mut components = Vec::with_capacity(compiled.components.len());
+        for row in &compiled.components {
+            components.push(self.component_row(row)?);
+        }
+
+        if require_body && content.is_none() && embeds.is_empty() {
+            return Err(RunError::EmptyMessage);
+        }
+        if !require_body && content.is_none() && embeds.is_empty() && components.is_empty() {
+            return Err(RunError::EmptyMessage);
+        }
+
+        Ok(MessagePayload {
+            content,
+            embeds,
+            components,
+        })
+    }
+
+    fn embed(&self, compiled: &CompiledEmbed) -> Result<(RenderedEmbed, usize), RunError> {
+        let title = self.render_optional(compiled.title.as_deref(), MAX_EMBED_TITLE_LEN);
+        let description =
+            self.render_optional(compiled.description.as_deref(), MAX_EMBED_DESCRIPTION_LEN);
+        let author = compiled
+            .author
+            .as_ref()
+            .map(|author| {
+                Ok(RenderedEmbedAuthor {
+                    name: self.render_required(
+                        &author.name,
+                        MAX_EMBED_AUTHOR_NAME_LEN,
+                        "embed author",
+                    )?,
+                    url: author.url.clone(),
+                    icon_url: author.icon_url.clone(),
+                })
+            })
+            .transpose()?;
+        let footer = compiled
+            .footer
+            .as_ref()
+            .map(|footer| {
+                Ok(RenderedEmbedFooter {
+                    text: self.render_required(
+                        &footer.text,
+                        MAX_EMBED_FOOTER_TEXT_LEN,
+                        "embed footer",
+                    )?,
+                    icon_url: footer.icon_url.clone(),
+                })
+            })
+            .transpose()?;
+
+        let mut fields = Vec::with_capacity(compiled.fields.len());
+        for field in &compiled.fields {
+            fields.push(RenderedEmbedField {
+                name: self.render_required(
+                    &field.name,
+                    MAX_EMBED_FIELD_NAME_LEN,
+                    "embed field name",
+                )?,
+                value: self.render_required(
+                    &field.value,
+                    MAX_EMBED_FIELD_VALUE_LEN,
+                    "embed field value",
+                )?,
+                inline: field.inline,
+            });
+        }
+
+        let has_content = title.is_some()
+            || description.is_some()
+            || author.is_some()
+            || footer.is_some()
+            || compiled.thumbnail_url.is_some()
+            || compiled.image_url.is_some()
+            || !fields.is_empty();
+        if !has_content {
+            return Err(RunError::EmptyEmbed);
+        }
+
+        let chars = title.as_deref().map_or(0, |s| s.chars().count())
+            + description.as_deref().map_or(0, |s| s.chars().count())
+            + author.as_ref().map_or(0, |a| a.name.chars().count())
+            + footer.as_ref().map_or(0, |f| f.text.chars().count())
+            + fields
+                .iter()
+                .map(|f| f.name.chars().count() + f.value.chars().count())
+                .sum::<usize>();
+        if chars > MAX_EMBED_TOTAL_LEN {
+            return Err(RunError::EmbedTooLarge);
+        }
+
+        Ok((
+            RenderedEmbed {
+                title,
+                url: compiled.url.clone(),
+                description,
+                color: compiled.color,
+                author,
+                footer,
+                thumbnail_url: compiled.thumbnail_url.clone(),
+                image_url: compiled.image_url.clone(),
+                fields,
+                timestamp: compiled.timestamp,
+            },
+            chars,
+        ))
+    }
+
+    fn component_row(&self, row: &CompiledComponentRow) -> Result<RenderedComponentRow, RunError> {
+        match row {
+            CompiledComponentRow::Buttons(buttons) => {
+                let mut rendered = Vec::with_capacity(buttons.len());
+                for button in buttons {
+                    rendered.push(match button {
+                        CompiledButton::Action {
+                            id,
+                            label,
+                            emoji,
+                            style,
+                            disabled,
+                        } => {
+                            let label =
+                                self.render_optional(label.as_deref(), MAX_BUTTON_LABEL_LEN);
+                            if label.is_none() && emoji.is_none() {
+                                return Err(RunError::EmptyButton);
+                            }
+                            RenderedButton::Action {
+                                id: id.clone(),
+                                label,
+                                emoji: emoji.clone(),
+                                style: *style,
+                                disabled: *disabled,
+                            }
+                        }
+                        CompiledButton::Link {
+                            url,
+                            label,
+                            emoji,
+                            disabled,
+                        } => {
+                            let label =
+                                self.render_optional(label.as_deref(), MAX_BUTTON_LABEL_LEN);
+                            if label.is_none() && emoji.is_none() {
+                                return Err(RunError::EmptyButton);
+                            }
+                            RenderedButton::Link {
+                                url: url.clone(),
+                                label,
+                                emoji: emoji.clone(),
+                                disabled: *disabled,
+                            }
+                        }
+                    });
+                }
+                Ok(RenderedComponentRow::Buttons(rendered))
+            }
+            CompiledComponentRow::SelectMenu {
+                id,
+                placeholder,
+                min_values,
+                max_values,
+                disabled,
+                options,
+            } => {
+                let placeholder =
+                    self.render_optional(placeholder.as_deref(), MAX_SELECT_PLACEHOLDER_LEN);
+                let mut rendered_options = Vec::with_capacity(options.len());
+                for option in options {
+                    rendered_options.push(RenderedSelectOption {
+                        label: self.render_required(
+                            &option.label,
+                            MAX_SELECT_OPTION_LABEL_LEN,
+                            "select option label",
+                        )?,
+                        value: option.value.clone(),
+                        description: self.render_optional(
+                            option.description.as_deref(),
+                            MAX_SELECT_OPTION_DESCRIPTION_LEN,
+                        ),
+                        emoji: option.emoji.clone(),
+                        default: option.default,
+                    });
+                }
+                Ok(RenderedComponentRow::SelectMenu {
+                    id: id.clone(),
+                    placeholder,
+                    min_values: *min_values,
+                    max_values: *max_values,
+                    disabled: *disabled,
+                    options: rendered_options,
+                })
+            }
+        }
     }
 }
 
@@ -390,6 +812,22 @@ fn compare(op: CompareOp, left: &Value, right: &Value) -> Result<bool, RunError>
     })
 }
 
+/// Parse an ID produced by a member target template. User command options are
+/// rendered as `<@id>` so they can be used both in messages and moderation.
+fn parse_member_id(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let value = value
+        .strip_prefix("<@")
+        .and_then(|value| value.strip_suffix('>'))
+        .unwrap_or(value)
+        .strip_prefix('!')
+        .unwrap_or(value);
+    ((17..=20).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.parse::<u64>().ok())
+        .flatten()
+        .filter(|id| *id != 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +857,7 @@ mod tests {
             guild_id: Some(7),
             channel_id: Some(9),
             options,
+            selected: None,
         }
     }
 
@@ -462,12 +901,91 @@ mod tests {
         assert_eq!(
             execution.effects,
             vec![Effect::Reply {
-                content: "Hello <@1>!".to_owned(),
+                message: MessagePayload::text("Hello <@1>!"),
                 ephemeral: true,
             }]
         );
         assert_eq!(execution.trigger, "/greet");
         assert_eq!(execution.error, None);
+    }
+
+    #[test]
+    fn plans_moderation_effects_for_a_user_command_option() {
+        let compiled = program(
+            r#"{"handlers":[{"trigger":{"type":"slash_command","name":"moderate","description":"Moderate",
+              "options":[{"name":"member","description":"Member","kind":"user","required":true}]},
+             "actions":[
+                {"type":"timeout","member_id":"{option.member}","seconds":600,"reason":"Rule violation"},
+                {"type":"kick","member_id":"{option.member}","reason":"Escalated"},
+                {"type":"ban","member_id":"{option.member}","reason":"Repeated violations"},
+                {"type":"direct_message","member_id":"{option.member}","content":"You were moderated."}
+             ]}]}"#,
+        );
+        let options = [("member".to_owned(), "<@!123456789012345678>".to_owned())];
+
+        let execution = run_slash(
+            &compiled,
+            "moderate",
+            context(&options, &[]),
+            &SavedVariables::default(),
+        );
+
+        assert_eq!(
+            execution.effects,
+            vec![
+                Effect::Timeout {
+                    member_id: 123_456_789_012_345_678,
+                    seconds: 600,
+                    reason: Some("Rule violation".to_owned()),
+                },
+                Effect::Kick {
+                    member_id: 123_456_789_012_345_678,
+                    reason: Some("Escalated".to_owned()),
+                },
+                Effect::Ban {
+                    member_id: 123_456_789_012_345_678,
+                    reason: Some("Repeated violations".to_owned()),
+                },
+                Effect::DirectMessage {
+                    member_id: 123_456_789_012_345_678,
+                    content: "You were moderated.".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(execution.error, None);
+    }
+
+    #[test]
+    fn plans_deleting_the_matched_message() {
+        let compiled = program(
+            r#"{"handlers":[{"trigger":{"type":"message_contains","pattern":"spam"},"actions":[
+                {"type":"delete_message"},{"type":"direct_message","member_id":"123456789012345678","content":"Please do not spam."}
+            ]}]}"#,
+        );
+        let execution = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::Message {
+                        content: "spam links",
+                    },
+                    context: context(&[], &[]),
+                },
+                &SavedVariables::default(),
+                &mut Highest,
+            )
+            .pop()
+            .expect("message matched");
+
+        assert_eq!(
+            execution.effects,
+            vec![
+                Effect::DeleteMessage,
+                Effect::DirectMessage {
+                    member_id: 123_456_789_012_345_678,
+                    content: "Please do not spam.".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -494,7 +1012,7 @@ mod tests {
         assert_eq!(
             verified.effects,
             vec![Effect::Reply {
-                content: "Already verified".to_owned(),
+                message: MessagePayload::text("Already verified"),
                 ephemeral: false
             }]
         );
@@ -504,7 +1022,7 @@ mod tests {
             .effects
             .iter()
             .filter_map(|effect| match effect {
-                Effect::Reply { content, .. } => Some(content.as_str()),
+                Effect::Reply { message, .. } => message.content.as_deref(),
                 _ => None,
             })
             .collect();
@@ -545,7 +1063,7 @@ mod tests {
         assert_eq!(
             execution.effects,
             vec![Effect::Reply {
-                content: "<@42> reached level 1 with 105 XP".to_owned(),
+                message: MessagePayload::text("<@42> reached level 1 with 105 XP"),
                 ephemeral: false
             }]
         );
@@ -612,13 +1130,85 @@ mod tests {
             execution.effects,
             vec![
                 Effect::Reply {
-                    content: "Computing…".to_owned(),
+                    message: MessagePayload::text("Computing…"),
                     ephemeral: false
                 },
                 Effect::Wait { seconds: 2 },
             ]
         );
         assert_eq!(execution.error, Some(RunError::DivisionByZero));
+    }
+
+    #[test]
+    fn runs_button_and_select_menu_triggers_with_rich_messages() {
+        let compiled = program(
+            r##"{"handlers":[
+                {"trigger":{"type":"button_click","id":"claim"},
+                 "actions":[
+                    {"type":"update_message","content":"","embeds":[{"title":"Claimed by {user.name}","color":"#22C55E","fields":[{"name":"User","value":"{user}","inline":true}]}],
+                     "components":[{"type":"buttons","buttons":[{"type":"action","id":"claim","label":"Claimed","style":"secondary","disabled":true}]}]},
+                    {"type":"reply","content":"All yours, {user}!","ephemeral":true}
+                 ]},
+                {"trigger":{"type":"select_menu","id":"role_menu"},
+                 "actions":[
+                    {"type":"if","condition":{"type":"compare","op":"equal","left":{"type":"selected"},"right":{"type":"text","value":"vip"}},
+                     "then":[{"type":"add_role","role_id":"111111111111111111"}]},
+                    {"type":"reply","content":"Picked {selected}","ephemeral":true}
+                 ]}
+            ]}"##,
+        );
+        let saved = SavedVariables::default();
+
+        let button_exec = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::ButtonClick { id: "claim" },
+                    context: context(&[], &[]),
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("button matched");
+        assert_eq!(button_exec.trigger, "button \"claim\"");
+        assert_eq!(button_exec.error, None);
+        assert_eq!(button_exec.effects.len(), 2);
+        match &button_exec.effects[0] {
+            Effect::UpdateMessage { message } => {
+                assert_eq!(message.content, None);
+                assert_eq!(message.embeds[0].title.as_deref(), Some("Claimed by ada"));
+                assert_eq!(message.embeds[0].color, Some(0x0022_C55E));
+                assert_eq!(message.embeds[0].fields[0].value, "<@42>");
+            }
+            other => panic!("unexpected first effect: {other:?}"),
+        }
+
+        let mut select_ctx = context(&[], &[]);
+        select_ctx.selected = Some("vip");
+        let select_exec = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::SelectMenu { id: "role_menu" },
+                    context: select_ctx,
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("select menu matched");
+        assert_eq!(select_exec.trigger, "select menu \"role_menu\"");
+        assert_eq!(
+            select_exec.effects,
+            vec![
+                Effect::AddRole {
+                    role_id: 111_111_111_111_111_111
+                },
+                Effect::Reply {
+                    message: MessagePayload::text("Picked vip"),
+                    ephemeral: true
+                }
+            ]
+        );
     }
 
     #[test]

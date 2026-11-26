@@ -12,10 +12,12 @@ pub struct Context<'a> {
     pub channel_id: Option<u64>,
     /// Slash command options as `(name, rendered value)`.
     pub options: &'a [(String, String)],
+    /// Selected value(s) when triggered by a select menu.
+    pub selected: Option<&'a str>,
 }
 
 impl Context<'_> {
-    /// Value of a built-in placeholder such as `user` or `option.NAME`.
+    /// Value of a built-in placeholder such as `user`, `option.NAME` or `selected`.
     pub(crate) fn builtin(&self, key: &str) -> Option<String> {
         match key {
             "user" | "user.mention" => Some(format!("<@{}>", self.user_id)),
@@ -24,6 +26,7 @@ impl Context<'_> {
             "server.id" => self.guild_id.map(|id| id.to_string()),
             "channel" => self.channel_id.map(|id| format!("<#{id}>")),
             "channel.id" => self.channel_id.map(|id| id.to_string()),
+            "selected" => self.selected.map(str::to_owned),
             _ => {
                 let name = key.strip_prefix("option.")?;
                 Some(self.option(name).unwrap_or_default().to_owned())
@@ -41,7 +44,18 @@ impl Context<'_> {
 
 /// Replace `{placeholders}` that `lookup` knows, leave the others untouched,
 /// and cut the result to Discord's message limit.
+#[cfg(test)]
 pub(crate) fn render(template: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    render_max(template, MAX_MESSAGE_LEN, lookup)
+}
+
+/// Replace `{placeholders}` that `lookup` knows, leave the others untouched,
+/// and cut the result to `max_chars` characters.
+pub(crate) fn render_max(
+    template: &str,
+    max_chars: usize,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> String {
     let mut output = String::with_capacity(template.len());
     let mut rest = template;
 
@@ -63,7 +77,7 @@ pub(crate) fn render(template: &str, lookup: impl Fn(&str) -> Option<String>) ->
     }
     output.push_str(rest);
 
-    match output.char_indices().nth(MAX_MESSAGE_LEN) {
+    match output.char_indices().nth(max_chars) {
         Some((cut, _)) => output[..cut].to_owned(),
         None => output,
     }
@@ -81,19 +95,21 @@ mod tests {
             guild_id: Some(7),
             channel_id: Some(9),
             options,
+            selected: None,
         }
     }
 
     #[test]
     fn renders_known_placeholders() {
         let options = [("who".to_owned(), "world".to_owned())];
-        let ctx = context(&options);
+        let mut ctx = context(&options);
+        ctx.selected = Some("blue");
         assert_eq!(
             render(
-                "Hi {user} ({user.name}) in {channel}, hello {option.who}!",
+                "Hi {user} ({user.name}) in {channel}, hello {option.who}! Picked {selected}",
                 |key| ctx.builtin(key)
             ),
-            "Hi <@42> (ada) in <#9>, hello world!"
+            "Hi <@42> (ada) in <#9>, hello world! Picked blue"
         );
     }
 

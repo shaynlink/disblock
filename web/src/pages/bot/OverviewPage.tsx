@@ -59,7 +59,7 @@ export function OverviewPage() {
             </Link>
           }
         />
-        <CardContent className="grid grid-cols-3 gap-4">
+        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Field label="Slash commands">
             <span className="text-2xl font-bold">{count(triggers, "slash_command")}</span>
           </Field>
@@ -69,12 +69,33 @@ export function OverviewPage() {
           <Field label="Message triggers">
             <span className="text-2xl font-bold">{count(triggers, "message_contains")}</span>
           </Field>
-          <div className="col-span-3 flex flex-wrap gap-2">
+          <Field label="Click triggers">
+            <span className="text-2xl font-bold">
+              {count(triggers, "button_click") + count(triggers, "select_menu")}
+            </span>
+          </Field>
+          <div className="col-span-2 flex flex-wrap gap-2 sm:col-span-4">
             {triggers
               .filter((trigger) => trigger.type === "slash_command")
               .map((trigger) => (
-                <Badge key={trigger.name} className="bg-secondary text-secondary-foreground">
+                <Badge
+                  key={`slash:${trigger.name}`}
+                  className="bg-secondary text-secondary-foreground"
+                >
                   /{trigger.name}
+                </Badge>
+              ))}
+            {triggers
+              .filter(
+                (trigger): trigger is Extract<Trigger, { type: "button_click" | "select_menu" }> =>
+                  trigger.type === "button_click" || trigger.type === "select_menu",
+              )
+              .map((trigger) => (
+                <Badge
+                  key={`${trigger.type}:${trigger.id}`}
+                  className="bg-secondary text-secondary-foreground"
+                >
+                  {trigger.type === "button_click" ? "button" : "menu"}: {trigger.id}
                 </Badge>
               ))}
           </div>

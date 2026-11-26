@@ -1,7 +1,13 @@
 import * as Blockly from "blockly";
 import { beforeAll, describe, expect, it } from "vite-plus/test";
 import { registerBlocks, sanitizeName, sanitizeVariable, starterWorkspace } from "./blocks.ts";
-import { GenerateError, generateProgram } from "./generate.ts";
+import {
+  GenerateError,
+  findMissingIntents,
+  generateProgram,
+  generateProgramWithMap,
+  resolveErrorBlockId,
+} from "./generate.ts";
 
 beforeAll(() => {
   registerBlocks();
@@ -89,6 +95,52 @@ describe("generateProgram", () => {
         actions: [{ type: "react", emoji: "🎉" }],
       },
       { trigger: { type: "member_join" }, actions: [] },
+    ]);
+  });
+
+  it("generates moderation actions with a member template", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "message_contains",
+            fields: { PATTERN: "spam", CASE_SENSITIVE: false },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "timeout_member",
+                  fields: { MEMBER_ID: "{user.id}", MINUTES: 5, REASON: "Spam" },
+                  next: {
+                    block: {
+                      type: "delete_triggering_message",
+                      next: {
+                        block: {
+                          type: "direct_message_member",
+                          fields: {
+                            MEMBER_ID: "{user.id}",
+                            CONTENT: "Please do not spam.",
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(generateProgram(workspace).handlers[0]?.actions).toEqual([
+      { type: "timeout", member_id: "{user.id}", seconds: 300, reason: "Spam" },
+      { type: "delete_message" },
+      {
+        type: "direct_message",
+        member_id: "{user.id}",
+        content: "Please do not spam.",
+      },
     ]);
   });
 });
@@ -217,5 +269,473 @@ describe("logic and variables", () => {
 describe("sanitizeVariable", () => {
   it("keeps names the server accepts", () => {
     expect(sanitizeVariable("XP Points-2")).toBe("xp_points_2");
+  });
+});
+
+describe("rich messages and on-click triggers", () => {
+  it("generates embeds, grouped button rows, select menus and component triggers", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "slash_command",
+            x: 0,
+            y: 0,
+            fields: { NAME: "panel", DESCRIPTION: "Open panel" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "reply_rich",
+                  fields: { CONTENT: "", EPHEMERAL: false },
+                  inputs: {
+                    EMBEDS: {
+                      block: {
+                        type: "embed",
+                        fields: {
+                          TITLE: "Roles",
+                          DESCRIPTION: "Pick yours",
+                          COLOR: " #5865F2 ",
+                          TIMESTAMP: true,
+                        },
+                        inputs: {
+                          PARTS: {
+                            block: {
+                              type: "embed_field",
+                              fields: { NAME: "Count", VALUE: "{server:count}", INLINE: true },
+                              next: {
+                                block: {
+                                  type: "embed_footer",
+                                  fields: { TEXT: "Disblock", ICON_URL: "" },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                    COMPONENTS: {
+                      block: {
+                        type: "component_button",
+                        fields: {
+                          LABEL: "Accept",
+                          STYLE: "success",
+                          ID: " accept ",
+                          EMOJI: "✅",
+                          DISABLED: false,
+                        },
+                        next: {
+                          block: {
+                            type: "component_link_button",
+                            fields: {
+                              LABEL: "Docs",
+                              URL: "https://example.com",
+                              EMOJI: "",
+                              DISABLED: false,
+                            },
+                            next: {
+                              block: {
+                                type: "component_new_row",
+                                next: {
+                                  block: {
+                                    type: "component_button",
+                                    fields: {
+                                      LABEL: "Reset",
+                                      STYLE: "danger",
+                                      ID: "reset",
+                                      EMOJI: "",
+                                      DISABLED: true,
+                                    },
+                                    next: {
+                                      block: {
+                                        type: "component_select_menu",
+                                        fields: {
+                                          ID: "color",
+                                          PLACEHOLDER: "Pick one",
+                                          MIN: 1,
+                                          MAX: 1,
+                                          DISABLED: false,
+                                        },
+                                        inputs: {
+                                          OPTIONS: {
+                                            block: {
+                                              type: "select_option",
+                                              fields: {
+                                                LABEL: "Red",
+                                                VALUE: "red",
+                                                DESCRIPTION: "Crimson",
+                                                EMOJI: "🔴",
+                                                DEFAULT: true,
+                                              },
+                                            },
+                                          },
+                                        },
+                                      },
+                                    },
+                                  },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "button_click",
+            x: 0,
+            y: 300,
+            fields: { ID: " accept " },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "update_message",
+                  fields: { CONTENT: "Done by {user}" },
+                },
+              },
+            },
+          },
+          {
+            type: "select_menu_trigger",
+            x: 0,
+            y: 500,
+            fields: { ID: "color" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "variable_set",
+                  fields: { SCOPE: "member", NAME: "color" },
+                  inputs: { VALUE: { block: { type: "value_selected" } } },
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(generateProgram(workspace).handlers).toEqual([
+      {
+        trigger: { type: "slash_command", name: "panel", description: "Open panel", options: [] },
+        actions: [
+          {
+            type: "reply",
+            content: "",
+            ephemeral: false,
+            embeds: [
+              {
+                title: "Roles",
+                description: "Pick yours",
+                color: "#5865F2",
+                footer: { text: "Disblock" },
+                fields: [{ name: "Count", value: "{server:count}", inline: true }],
+                timestamp: true,
+              },
+            ],
+            components: [
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    type: "action",
+                    id: "accept",
+                    label: "Accept",
+                    emoji: "✅",
+                    style: "success",
+                    disabled: false,
+                  },
+                  {
+                    type: "link",
+                    url: "https://example.com",
+                    label: "Docs",
+                    disabled: false,
+                  },
+                ],
+              },
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    type: "action",
+                    id: "reset",
+                    label: "Reset",
+                    style: "danger",
+                    disabled: true,
+                  },
+                ],
+              },
+              {
+                type: "select_menu",
+                id: "color",
+                placeholder: "Pick one",
+                min_values: 1,
+                max_values: 1,
+                disabled: false,
+                options: [
+                  {
+                    label: "Red",
+                    value: "red",
+                    description: "Crimson",
+                    emoji: "🔴",
+                    default: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      {
+        trigger: { type: "button_click", id: "accept" },
+        actions: [{ type: "update_message", content: "Done by {user}" }],
+      },
+      {
+        trigger: { type: "select_menu", id: "color" },
+        actions: [
+          {
+            type: "set_variable",
+            scope: "member",
+            name: "color",
+            value: { type: "selected" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("points at duplicate embed parts", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "button_click",
+            fields: { ID: "go" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "reply_rich",
+                  inputs: {
+                    EMBEDS: {
+                      block: {
+                        type: "embed",
+                        inputs: {
+                          PARTS: {
+                            block: {
+                              type: "embed_footer",
+                              fields: { TEXT: "One" },
+                              next: {
+                                block: {
+                                  type: "embed_footer",
+                                  id: "dup_footer",
+                                  fields: { TEXT: "Two" },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(() => generateProgram(workspace)).toThrow(GenerateError);
+    try {
+      generateProgram(workspace);
+    } catch (error) {
+      expect(error instanceof GenerateError && error.blockId).toBe("dup_footer");
+    }
+  });
+});
+
+describe("editor validation mapping and intents", () => {
+  it("resolves nested server error locations back to the exact block ID", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "slash_command",
+            id: "trig_cmd",
+            x: 0,
+            y: 0,
+            fields: { NAME: "test", DESCRIPTION: "Test" },
+            inputs: {
+              OPTIONS: {
+                block: {
+                  type: "command_option",
+                  id: "opt_0",
+                  fields: { NAME: "a", KIND: "string", REQUIRED: false, DESCRIPTION: "A" },
+                  next: {
+                    block: {
+                      type: "command_option",
+                      id: "opt_1",
+                      fields: { NAME: "b", KIND: "string", REQUIRED: true, DESCRIPTION: "B" },
+                    },
+                  },
+                },
+              },
+              ACTIONS: {
+                block: {
+                  type: "logic_if",
+                  id: "if_outer",
+                  inputs: {
+                    CONDITION: {
+                      block: {
+                        type: "logic_operation",
+                        id: "and_node",
+                        fields: { OP: "and" },
+                        inputs: {
+                          LEFT: { block: { type: "logic_boolean", fields: { VALUE: "true" } } },
+                          RIGHT: {
+                            block: {
+                              type: "has_role",
+                              id: "bad_role",
+                              fields: { ROLE_ID: "bad" },
+                            },
+                          },
+                        },
+                      },
+                    },
+                    THEN: {
+                      block: {
+                        type: "reply_rich",
+                        id: "rich_reply",
+                        inputs: {
+                          EMBEDS: {
+                            block: {
+                              type: "embed",
+                              id: "embed_0",
+                              inputs: {
+                                PARTS: {
+                                  block: {
+                                    type: "embed_field",
+                                    id: "field_0",
+                                    fields: { NAME: "A", VALUE: "B" },
+                                    next: {
+                                      block: {
+                                        type: "embed_field",
+                                        id: "field_1",
+                                        fields: { NAME: "", VALUE: "X" },
+                                      },
+                                    },
+                                  },
+                                },
+                              },
+                            },
+                          },
+                          COMPONENTS: {
+                            block: {
+                              type: "component_button",
+                              id: "btn_0",
+                              fields: { ID: "ok", LABEL: "OK", STYLE: "primary" },
+                              next: {
+                                block: {
+                                  type: "component_select_menu",
+                                  id: "menu_1",
+                                  fields: { ID: "pick", PLACEHOLDER: "Pick" },
+                                  inputs: {
+                                    OPTIONS: {
+                                      block: {
+                                        type: "select_option",
+                                        id: "sel_opt_0",
+                                        fields: { LABEL: "A", VALUE: "same" },
+                                        next: {
+                                          block: {
+                                            type: "select_option",
+                                            id: "sel_opt_1",
+                                            fields: { LABEL: "B", VALUE: "same" },
+                                          },
+                                        },
+                                      },
+                                    },
+                                  },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { map } = generateProgramWithMap(workspace);
+    expect(resolveErrorBlockId(map, { handler: 0 })).toBe("trig_cmd");
+    expect(resolveErrorBlockId(map, { handler: 0, option: 1 })).toBe("opt_1");
+    expect(
+      resolveErrorBlockId(map, {
+        handler: 0,
+        steps: [{ index: 0 }],
+        expr: [0, 1],
+      }),
+    ).toBe("bad_role");
+    expect(
+      resolveErrorBlockId(map, {
+        handler: 0,
+        steps: [{ index: 0, branch: "then" }, { index: 0 }],
+        embed: { index: 0, part: { type: "field", index: 1 } },
+      }),
+    ).toBe("field_1");
+    expect(
+      resolveErrorBlockId(map, {
+        handler: 0,
+        steps: [{ index: 0, branch: "then" }, { index: 0 }],
+        component: { row: 1, option: 1 },
+      }),
+    ).toBe("sel_opt_1");
+  });
+
+  it("detects missing privileged intents on enabled trigger blocks", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          { type: "member_join", id: "join_blk", x: 0, y: 0 },
+          {
+            type: "message_contains",
+            id: "msg_blk",
+            x: 0,
+            y: 200,
+            fields: { PATTERN: "hi", CASE_SENSITIVE: false },
+          },
+          {
+            type: "message_contains",
+            id: "disabled_msg",
+            x: 0,
+            y: 400,
+            enabled: false,
+            fields: { PATTERN: "off", CASE_SENSITIVE: false },
+          },
+        ],
+      },
+    });
+
+    expect(findMissingIntents(workspace, { members: false, message_content: true })).toEqual([
+      {
+        intent: "members",
+        label: "Server Members Intent",
+        blockId: "join_blk",
+        message:
+          "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving.",
+      },
+    ]);
+    expect(findMissingIntents(workspace, { members: true, message_content: true })).toEqual([]);
   });
 });

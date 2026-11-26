@@ -11,7 +11,9 @@ export interface Handler {
 export type Trigger =
   | { type: "slash_command"; name: string; description: string; options: CommandOption[] }
   | { type: "member_join" }
-  | { type: "message_contains"; pattern: string; case_sensitive: boolean };
+  | { type: "message_contains"; pattern: string; case_sensitive: boolean }
+  | { type: "button_click"; id: string }
+  | { type: "select_menu"; id: string };
 
 export type OptionKind = "string" | "integer" | "boolean" | "user";
 
@@ -36,11 +38,103 @@ export type CompareOp =
   | "greater_or_equal"
   | "contains";
 
+export interface EmbedAuthor {
+  name: string;
+  url?: string;
+  icon_url?: string;
+}
+
+export interface EmbedFooter {
+  text: string;
+  icon_url?: string;
+}
+
+export interface EmbedField {
+  name: string;
+  value: string;
+  inline: boolean;
+}
+
+export interface Embed {
+  title?: string;
+  url?: string;
+  description?: string;
+  color?: string;
+  author?: EmbedAuthor;
+  footer?: EmbedFooter;
+  thumbnail_url?: string;
+  image_url?: string;
+  fields: EmbedField[];
+  timestamp: boolean;
+}
+
+export type ButtonStyle = "primary" | "secondary" | "success" | "danger";
+
+export type ButtonSpec =
+  | {
+      type: "action";
+      id: string;
+      label?: string;
+      emoji?: string;
+      style: ButtonStyle;
+      disabled: boolean;
+    }
+  | {
+      type: "link";
+      url: string;
+      label?: string;
+      emoji?: string;
+      disabled: boolean;
+    };
+
+export interface SelectOption {
+  label: string;
+  value: string;
+  description?: string;
+  emoji?: string;
+  default: boolean;
+}
+
+export type ComponentRow =
+  | { type: "buttons"; buttons: ButtonSpec[] }
+  | {
+      type: "select_menu";
+      id: string;
+      placeholder?: string;
+      min_values?: number;
+      max_values?: number;
+      disabled: boolean;
+      options: SelectOption[];
+    };
+
 export type Statement =
-  | { type: "reply"; content: string; ephemeral: boolean }
-  | { type: "send_message"; channel_id: string; content: string }
+  | {
+      type: "reply";
+      content: string;
+      ephemeral: boolean;
+      embeds?: Embed[];
+      components?: ComponentRow[];
+    }
+  | {
+      type: "send_message";
+      channel_id: string;
+      content: string;
+      embeds?: Embed[];
+      components?: ComponentRow[];
+    }
+  | {
+      type: "update_message";
+      content: string;
+      embeds?: Embed[];
+      components?: ComponentRow[];
+    }
   | { type: "add_role"; role_id: string }
   | { type: "remove_role"; role_id: string }
+  | { type: "timeout"; member_id: string; seconds: number; reason: string }
+  | { type: "kick"; member_id: string; reason: string }
+  | { type: "ban"; member_id: string; reason: string }
+  | { type: "delete_message" }
+  | { type: "direct_message"; member_id: string; content: string }
   | { type: "react"; emoji: string }
   | { type: "if"; condition: Expr; then: Statement[]; else: Statement[] }
   | { type: "set_variable"; scope: Scope; name: string; value: Expr }
@@ -54,6 +148,7 @@ export type Expr =
   | { type: "boolean"; value: boolean }
   | { type: "variable"; scope: Scope; name: string }
   | { type: "option"; name: string }
+  | { type: "selected" }
   | { type: "random"; min: Expr; max: Expr }
   | { type: "math"; op: MathOp; left: Expr; right: Expr }
   | { type: "compare"; op: CompareOp; left: Expr; right: Expr }
@@ -85,6 +180,44 @@ export interface Bot {
 export interface BotDetail extends Bot {
   workspace: object;
   program: Program;
+}
+
+export interface BotIntents {
+  members: boolean;
+  message_content: boolean;
+}
+
+export interface StepRef {
+  index: number;
+  branch?: "then" | "else";
+}
+
+export type EmbedPartLocation =
+  | { type: "title_url" }
+  | { type: "author" }
+  | { type: "footer" }
+  | { type: "thumbnail" }
+  | { type: "image" }
+  | { type: "field"; index: number };
+
+export interface EmbedLocation {
+  index: number;
+  part?: EmbedPartLocation;
+}
+
+export interface ComponentLocation {
+  row: number;
+  button?: number;
+  option?: number;
+}
+
+export interface ErrorLocation {
+  handler: number;
+  option?: number;
+  steps?: StepRef[];
+  expr?: number[];
+  embed?: EmbedLocation;
+  component?: ComponentLocation;
 }
 
 export interface ExecutionEntry {

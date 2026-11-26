@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use disblock_program::{CompileError, CompiledProgram, GatewayNeeds, Program};
+use serde::Serialize;
 use sqlx::PgPool;
 use sqlx::types::Json;
 use std::time::Duration;
@@ -26,6 +27,7 @@ use twilight_model::channel::message::{AllowedMentions, MentionType};
 use twilight_model::gateway::event::Event;
 use twilight_model::id::Id;
 use twilight_model::id::marker::ApplicationMarker;
+use twilight_model::oauth::ApplicationFlags;
 use uuid::Uuid;
 
 use crate::crypto::{CryptoError, TokenCipher};
@@ -77,6 +79,28 @@ struct Inner {
 #[derive(Clone)]
 pub struct Runtime {
     inner: Arc<Inner>,
+}
+
+/// Privileged gateway intents enabled on a Discord application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BotIntents {
+    pub members: bool,
+    pub message_content: bool,
+}
+
+#[must_use]
+pub fn intents_from_flags(flags: Option<ApplicationFlags>) -> BotIntents {
+    let flags = flags.unwrap_or_else(ApplicationFlags::empty);
+    BotIntents {
+        members: flags.intersects(
+            ApplicationFlags::GATEWAY_GUILD_MEMBERS
+                | ApplicationFlags::GATEWAY_GUILD_MEMBERS_LIMITED,
+        ),
+        message_content: flags.intersects(
+            ApplicationFlags::GATEWAY_MESSAGE_CONTENT
+                | ApplicationFlags::GATEWAY_MESSAGE_CONTENT_LIMITED,
+        ),
+    }
 }
 
 /// A bot's credentials and program, loaded from the database.
@@ -253,6 +277,40 @@ impl Runtime {
                 .open(id, &row.token_nonce, &row.token_ciphertext)?,
             program: row.program.0.compile()?,
         })
+    }
+
+    async fn load_token(&self, id: Uuid) -> Result<String, RuntimeError> {
+        let row = sqlx::query!(
+            "SELECT token_nonce, token_ciphertext FROM bots WHERE id = $1",
+            id,
+        )
+        .fetch_optional(&self.inner.db)
+        .await?
+        .ok_or(RuntimeError::NotFound)?;
+
+        Ok(self
+            .inner
+            .cipher
+            .open(id, &row.token_nonce, &row.token_ciphertext)?)
+    }
+
+    /// Ask Discord which privileged gateway intents are currently enabled on
+    /// the bot's application.
+    pub async fn fetch_intents(&self, id: Uuid) -> Result<BotIntents, RuntimeError> {
+        let token = self.load_token(id).await?;
+        let http = bot_client(&token);
+        let response = http.current_user_application().await.map_err(|error| {
+            RuntimeError::Discord(if is_unauthorized(&error) {
+                "Discord rejected the bot token: it was probably reset".to_owned()
+            } else {
+                format!("Discord did not answer when checking intents: {error}")
+            })
+        })?;
+        let application = response
+            .model()
+            .await
+            .map_err(|error| RuntimeError::Discord(error.to_string()))?;
+        Ok(intents_from_flags(application.flags))
     }
 
     async fn set_status(&self, id: Uuid, status: &str, detail: Option<&str>) {

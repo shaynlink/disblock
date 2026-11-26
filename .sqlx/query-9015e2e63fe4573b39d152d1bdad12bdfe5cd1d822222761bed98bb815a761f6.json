@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT token_nonce, token_ciphertext FROM bots WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "token_nonce",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "bots",
+            "name": "token_nonce"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "token_ciphertext",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "bots",
+            "name": "token_ciphertext"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9015e2e63fe4573b39d152d1bdad12bdfe5cd1d822222761bed98bb815a761f6"
+}
