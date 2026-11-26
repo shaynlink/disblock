@@ -4,6 +4,8 @@
 mod commands;
 mod dispatch;
 pub mod log;
+mod quota;
+mod sessions;
 mod variables;
 
 use std::collections::HashMap;
@@ -20,7 +22,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use twilight_gateway::queue::InMemoryQueue;
-use twilight_gateway::{CloseFrame, ConfigBuilder, EventTypeFlags, Intents, Shard, StreamExt as _};
+use twilight_gateway::{CloseFrame, ConfigBuilder, EventTypeFlags, Intents, Session, Shard, StreamExt as _};
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_model::channel::message::{AllowedMentions, MentionType};
@@ -452,12 +454,27 @@ async fn run_bot(
         Duration::from_millis(limit.reset_after),
         limit.total,
     );
-    let config = ConfigBuilder::new(token, intents(needs))
-        .queue(queue)
-        .build();
+    let saved_sessions = match sessions::load(&bot.db, bot.id).await {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            tracing::warn!(bot = %bot.id, %error, "could not load gateway resume sessions");
+            HashMap::new()
+        }
+    };
 
     let mut shard_tasks = JoinSet::new();
     for shard_id in twilight_gateway::bucket(0, 1, info.shards) {
+        let config = if let Some(saved) = saved_sessions.get(&shard_id.number()) {
+            ConfigBuilder::new(token.clone(), intents(needs))
+                .queue(queue.clone())
+                .session(Session::new(saved.sequence, saved.session_id.clone()))
+                .resume_url(saved.resume_url.clone())
+                .build()
+        } else {
+            ConfigBuilder::new(token.clone(), intents(needs))
+                .queue(queue.clone())
+                .build()
+        };
         let shard = Shard::with_config(shard_id, config.clone());
         shard_tasks.spawn(run_shard(
             runtime.clone(),
@@ -507,14 +524,39 @@ async fn run_shard(
 
         match item {
             None => return Some(close_reason(last_close)),
-            Some(Ok(Event::Ready(_))) => {
-                tracing::info!(bot = %bot.id, shard = %shard.id(), "shard ready");
-                runtime.set_status(bot.id, "online", None).await;
-            }
-            Some(Ok(Event::GatewayClose(frame))) => last_close = frame.map(|frame| frame.code),
             Some(Ok(event)) => {
-                let program = program.borrow().clone();
-                tokio::spawn(dispatch::handle(bot.clone(), program, event));
+                let invalidate = matches!(&event, Event::GatewayInvalidateSession(false));
+                let persisted = if invalidate {
+                    sessions::clear(&bot.db, bot.id, shard.id().number()).await
+                } else {
+                    sessions::save(
+                        &bot.db,
+                        bot.id,
+                        shard.id().number(),
+                        shard.session(),
+                        shard.resume_url(),
+                    )
+                    .await
+                };
+                if let Err(error) = persisted {
+                    tracing::warn!(bot = %bot.id, shard = %shard.id(), %error, "could not persist gateway resume session");
+                }
+
+                match event {
+                    Event::Ready(_) => {
+                        tracing::info!(bot = %bot.id, shard = %shard.id(), "shard ready");
+                        runtime.set_status(bot.id, "online", None).await;
+                    }
+                    Event::Resumed => {
+                        tracing::info!(bot = %bot.id, shard = %shard.id(), "shard session resumed");
+                        runtime.set_status(bot.id, "online", None).await;
+                    }
+                    Event::GatewayClose(frame) => last_close = frame.map(|frame| frame.code),
+                    event => {
+                        let program = program.borrow().clone();
+                        tokio::spawn(dispatch::handle(bot.clone(), program, event));
+                    }
+                }
             }
             Some(Err(error)) => tracing::warn!(bot = %bot.id, %error, "gateway error"),
         }
