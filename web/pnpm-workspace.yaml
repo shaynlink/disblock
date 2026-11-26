@@ -1,0 +1,9 @@
+# Wrangler needs these to download the workerd binary and bundle the worker.
+allowBuilds:
+  esbuild: true
+  workerd: true
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@8.3.8001
+  vite-plus: 1.8.0
+overrides:
+  vite@*: "catalog:"

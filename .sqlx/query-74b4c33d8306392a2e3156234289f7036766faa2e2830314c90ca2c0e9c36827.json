@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO executions (bot_id, trigger, success, error, duration_ms)\n           SELECT r.bot_id, r.trigger, r.success, r.error, r.duration_ms\n           FROM UNNEST($1::uuid[], $2::text[], $3::bool[], $4::text[], $5::int4[])\n                AS r (bot_id, trigger, success, error, duration_ms)\n           JOIN bots b ON b.id = r.bot_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "BoolArray",
+        "TextArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "74b4c33d8306392a2e3156234289f7036766faa2e2830314c90ca2c0e9c36827"
+}

@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: disblock
+      POSTGRES_PASSWORD: disblock
+      POSTGRES_DB: disblock
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U disblock"]
+      interval: 2s
+      retries: 20
+
+volumes:
+  pgdata:

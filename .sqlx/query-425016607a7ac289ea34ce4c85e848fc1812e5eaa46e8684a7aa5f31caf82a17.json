@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM executions WHERE created_at < now() - interval '30 days'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "425016607a7ac289ea34ce4c85e848fc1812e5eaa46e8684a7aa5f31caf82a17"
+}

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users (id, discord_id, username, avatar)\n           VALUES ($1, $2, $3, $4)\n           ON CONFLICT (discord_id) DO UPDATE\n           SET username = EXCLUDED.username, avatar = EXCLUDED.avatar, updated_at = now()\n           RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "51310f91447acd1d46815a67339336547e3f50c89de1d23d3134eff4bcd91095"
+}
