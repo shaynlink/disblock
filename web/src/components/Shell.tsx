@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   LogOut,
   Settings,
+  UserRound,
 } from "lucide-react";
 import { Link, NavLink, Outlet, useMatch } from "react-router";
 import { avatarUrl } from "../api.ts";
@@ -38,7 +39,10 @@ function Sidebar({ user }: { user: User }) {
         { to: `/bots/${botId}/billing`, label: "Billing", icon: <CreditCard /> },
         { to: `/bots/${botId}/settings`, label: "Settings", icon: <Settings /> },
       ]
-    : [{ to: "/", label: "Bots", icon: <Bot />, end: true }];
+    : [
+        { to: "/", label: "Bots", icon: <Bot />, end: true },
+        { to: "/account", label: "Account", icon: <UserRound /> },
+      ];
 
   return (
     <aside className="flex shrink-0 flex-col rounded-xl border bg-card shadow-sm md:sticky md:top-0 md:h-full md:w-64">

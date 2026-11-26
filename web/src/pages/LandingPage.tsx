@@ -565,6 +565,11 @@ export function LandingPage({ locale, signedIn = false, onOpenDashboard }: Landi
                 </a>
               </li>
               <li>
+                <Link to={publicRoutePath(locale, "legal")} className="hover:text-foreground">
+                  {copy.nav.legal}
+                </Link>
+              </li>
+              <li>
                 <Link to={publicRoutePath(locale, "privacy")} className="hover:text-foreground">
                   {copy.nav.privacy}
                 </Link>

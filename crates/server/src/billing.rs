@@ -26,6 +26,37 @@ const STRIPE_API: &str = "https://api.stripe.com/v1";
 const STRIPE_API_VERSION: &str = "2026-02-25.clover";
 const WEBHOOK_TOLERANCE_SECONDS: i64 = 300;
 
+/// Close the Stripe customer before account deletion so a paid subscription
+/// cannot outlive the service account it belongs to.
+pub async fn delete_customer(state: &AppState, user_id: Uuid) -> Result<(), ApiError> {
+    let customer = sqlx::query_scalar::<_, String>(
+        "SELECT stripe_customer_id FROM stripe_customers WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await?;
+    let Some(customer) = customer else {
+        return Ok(());
+    };
+    let stripe = stripe_config(state)?;
+    let response = state
+        .http
+        .delete(format!("{STRIPE_API}/customers/{customer}"))
+        .basic_auth(&stripe.secret_key, Some(""))
+        .header("Stripe-Version", STRIPE_API_VERSION)
+        .send()
+        .await
+        .map_err(|error| ApiError::BillingProvider(error.to_string()))?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(ApiError::BillingProvider(format!(
+            "Stripe returned HTTP {} while deleting a customer",
+            response.status()
+        )))
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/billing/bots/{id}", routing::get(status))

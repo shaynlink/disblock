@@ -5,6 +5,7 @@ import { RouterProvider } from "react-router/dom";
 import App from "./App.tsx";
 import { DEFAULT_LOCALE, SUPPORTED_LOCALES, publicRoutePath } from "./data/landingData.ts";
 import { BotsPage } from "./pages/BotsPage.tsx";
+import { AccountPage } from "./pages/AccountPage.tsx";
 import { ActivityPage } from "./pages/bot/ActivityPage.tsx";
 import { BotLayout } from "./pages/bot/BotLayout.tsx";
 import { BillingPage } from "./pages/bot/BillingPage.tsx";
@@ -28,6 +29,7 @@ const router = createBrowserRouter([
     element: <App />,
     children: [
       { index: true, element: <BotsPage /> },
+      { path: "account", element: <AccountPage /> },
       ...publicRoutes,
       {
         path: "bots/:id",

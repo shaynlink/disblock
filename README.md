@@ -122,3 +122,12 @@ cd web && pnpm run deploy
 Attach your domain to the `disblock` worker, and add
 `https://your-domain/api/auth/callback` to the Discord application's OAuth2
 redirects.
+
+### 5. Legal identity
+
+Before publishing the service, set these build-time variables for the web app:
+`VITE_LEGAL_PUBLISHER`, `VITE_LEGAL_FORM`, `VITE_LEGAL_ADDRESS`,
+`VITE_LEGAL_REGISTRATION`, `VITE_LEGAL_VAT`, `VITE_LEGAL_EMAIL`,
+`VITE_LEGAL_PHONE`, `VITE_LEGAL_PUBLICATION_DIRECTOR`, and
+`VITE_LEGAL_CONSUMER_MEDIATOR`. They populate `/legal` and deliberately show a
+visible placeholder when absent; do not publish with placeholders.

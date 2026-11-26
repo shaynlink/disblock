@@ -67,9 +67,19 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (await response.json()) as T;
 }
 
+async function accountExport(): Promise<Blob> {
+  const response = await fetch("/api/account/export", { credentials: "same-origin" });
+  if (!response.ok) {
+    throw new ApiError(response.status, `Could not export data (${response.status})`);
+  }
+  return response.blob();
+}
+
 export const api = {
   me: () => request<User>("GET", "/me"),
   logout: () => request<void>("POST", "/auth/logout"),
+  accountExport,
+  deleteAccount: () => request<void>("DELETE", "/account", { confirmation: "DELETE" }),
   bots: () => request<Bot[]>("GET", "/bots"),
   bot: (id: string) => request<BotDetail>("GET", `/bots/${id}`),
   addBot: (token: string) => request<Bot>("POST", "/bots", { token }),

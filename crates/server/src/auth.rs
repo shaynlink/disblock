@@ -1,8 +1,8 @@
 //! "Sign in with Discord" (`OAuth2` authorization code flow) and cookie sessions.
 
 use axum::extract::{FromRequestParts, Query, State};
-use axum::http::StatusCode;
 use axum::http::request::Parts;
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Json, Router, routing};
 use axum_extra::extract::CookieJar;
@@ -27,6 +27,8 @@ pub fn routes() -> Router<AppState> {
         .route("/auth/login", routing::get(login))
         .route("/auth/callback", routing::get(callback))
         .route("/auth/logout", routing::post(logout))
+        .route("/account/export", routing::get(export_account))
+        .route("/account", routing::delete(delete_account))
         .route("/me", routing::get(me))
 }
 
@@ -65,6 +67,92 @@ impl FromRequestParts<AppState> for CurrentUser {
 
 async fn me(user: CurrentUser) -> Json<CurrentUser> {
     Json(user)
+}
+
+/// Data portability export. Deliberately excludes encrypted bot tokens: they
+/// are credentials, never returned to browsers, and cannot be safely exported.
+async fn export_account(
+    State(state): State<AppState>,
+    user: CurrentUser,
+) -> Result<Response, ApiError> {
+    let data: serde_json::Value = sqlx::query_scalar(
+        r"SELECT jsonb_build_object(
+             'format', 'disblock-account-export-v1',
+             'exported_at', now(),
+             'account', jsonb_build_object(
+                'discord_id', u.discord_id, 'username', u.username, 'avatar', u.avatar,
+                'created_at', u.created_at, 'updated_at', u.updated_at
+             ),
+             'bots', COALESCE((
+                SELECT jsonb_agg(jsonb_build_object(
+                   'id', b.id, 'application_id', b.application_id, 'name', b.name,
+                   'avatar', b.avatar, 'enabled', b.enabled, 'status', b.status,
+                   'status_detail', b.status_detail, 'workspace', b.workspace, 'program', b.program,
+                   'created_at', b.created_at, 'updated_at', b.updated_at,
+                   'executions', COALESCE((
+                     SELECT jsonb_agg(jsonb_build_object(
+                       'trigger', e.trigger, 'success', e.success, 'error', e.error,
+                       'duration_ms', e.duration_ms, 'created_at', e.created_at
+                     ) ORDER BY e.created_at)
+                     FROM executions e WHERE e.bot_id = b.id
+                   ), '[]'::jsonb),
+                   'variables', COALESCE((
+                     SELECT jsonb_agg(jsonb_build_object(
+                       'guild_id', v.guild_id, 'user_id', v.user_id, 'name', v.name,
+                       'value', v.value, 'updated_at', v.updated_at
+                     ) ORDER BY v.guild_id, v.user_id, v.name)
+                     FROM bot_variables v WHERE v.bot_id = b.id
+                   ), '[]'::jsonb)
+                ) ORDER BY b.created_at)
+                FROM bots b WHERE b.owner_id = u.id
+             ), '[]'::jsonb)
+           ) FROM users u WHERE u.id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&state.db)
+    .await?;
+    let mut response = Json(data).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_static("attachment; filename=disblock-account-export.json"),
+    );
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct DeleteAccount {
+    confirmation: String,
+}
+
+async fn delete_account(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    user: CurrentUser,
+    Json(body): Json<DeleteAccount>,
+) -> Result<Response, ApiError> {
+    if body.confirmation != "DELETE" {
+        return Err(ApiError::BadRequest(
+            "type DELETE to confirm account deletion".to_owned(),
+        ));
+    }
+
+    let bot_ids = sqlx::query_scalar::<_, Uuid>("SELECT id FROM bots WHERE owner_id = $1")
+        .bind(user.id)
+        .fetch_all(&state.db)
+        .await?;
+    for bot_id in bot_ids {
+        state.runtime.stop(bot_id).await;
+        if let Err(error) = state.runtime.clear_commands(bot_id).await {
+            tracing::warn!(bot = %bot_id, %error, "could not remove commands during account deletion");
+        }
+    }
+
+    crate::billing::delete_customer(&state, user.id).await?;
+    sqlx::query!("DELETE FROM users WHERE id = $1", user.id)
+        .execute(&state.db)
+        .await?;
+    let jar = jar.remove(Cookie::build(SESSION_COOKIE).path("/"));
+    Ok((jar, StatusCode::NO_CONTENT).into_response())
 }
 
 async fn login(State(state): State<AppState>, jar: CookieJar) -> Response {
