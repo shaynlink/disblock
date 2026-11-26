@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>https://disblock.org/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://disblock.org/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://disblock.org/fr/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://disblock.org/" />
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+  <url>
+    <loc>https://disblock.org/fr/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://disblock.org/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://disblock.org/fr/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://disblock.org/" />
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+  <url>
+    <loc>https://disblock.org/privacy/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://disblock.org/privacy/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://disblock.org/fr/privacy/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://disblock.org/privacy/" />
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://disblock.org/fr/privacy/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://disblock.org/privacy/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://disblock.org/fr/privacy/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://disblock.org/privacy/" />
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://disblock.org/terms/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://disblock.org/terms/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://disblock.org/fr/terms/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://disblock.org/terms/" />
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+  <url>
+    <loc>https://disblock.org/fr/terms/</loc>
+    <xhtml:link rel="alternate" hreflang="en" href="https://disblock.org/terms/" />
+    <xhtml:link rel="alternate" hreflang="fr" href="https://disblock.org/fr/terms/" />
+    <xhtml:link rel="alternate" hreflang="x-default" href="https://disblock.org/terms/" />
+    <changefreq>monthly</changefreq>
+    <priority>0.4</priority>
+  </url>
+</urlset>

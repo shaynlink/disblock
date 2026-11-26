@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /bots/
+
+Sitemap: https://disblock.org/sitemap.xml
