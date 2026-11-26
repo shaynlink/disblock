@@ -22,7 +22,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use twilight_gateway::queue::InMemoryQueue;
-use twilight_gateway::{CloseFrame, ConfigBuilder, EventTypeFlags, Intents, Session, Shard, StreamExt as _};
+use twilight_gateway::{
+    CloseFrame, ConfigBuilder, EventTypeFlags, Intents, Session, Shard, StreamExt as _,
+};
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_model::channel::message::{AllowedMentions, MentionType};
