@@ -91,6 +91,7 @@ fly secrets set \
   DISCORD_CLIENT_ID='…' \
   DISCORD_CLIENT_SECRET='…' \
   ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  ORIGIN_SECRET="$(openssl rand -hex 32)" \
   STRIPE_SECRET_KEY='sk_live_…' \
   STRIPE_WEBHOOK_SECRET='whsec_…' \
   STRIPE_PRO_PRICE_ID='price_…'
@@ -117,7 +118,10 @@ the three Stripe variables unset keeps billing disabled for local development.
 
 ### 4. Cloudflare
 
-Set `API_ORIGIN` in `web/wrangler.jsonc` to the Fly app URL, then:
+Set `API_ORIGIN` in `web/wrangler.jsonc` to the Fly app URL, and give the
+Worker the same `ORIGIN_SECRET` as Fly so rate limits apply per browser
+rather than per Cloudflare egress address (`cd web && pnpm exec wrangler
+secret put ORIGIN_SECRET`). Then:
 
 ```bash
 cd web && pnpm run deploy
