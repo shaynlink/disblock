@@ -57,18 +57,35 @@ async fn plan(
     program: &CompiledProgram,
     event: &Event<'_>,
 ) -> Result<Vec<Execution>, String> {
-    let saved = match event.context.guild_id {
+    match event.context.guild_id {
         Some(guild_id) if program.uses_saved_variables() => {
-            variables::load(&bot.db, bot.id, guild_id, event.context.user_id)
+            variables::plan_and_save(&bot.db, bot.id, guild_id, event.context.user_id, |saved| {
+                program.handle(event, saved, &mut ThreadRandom)
+            })
+            .await
+            .map_err(|error| {
+                tracing::error!(bot = %bot.id, %error, "failed to load variables");
+                "could not load saved variables".to_owned()
+            })?
+            .ok_or_else(|| "monthly execution limit reached for this bot's plan".to_owned())
+        }
+        _ => {
+            let executions = program.handle(event, &SavedVariables::default(), &mut ThreadRandom);
+            let count = i32::try_from(executions.len())
+                .map_err(|_| "too many executions".to_owned())?;
+            if super::quota::reserve_many(&bot.db, bot.id, count)
                 .await
                 .map_err(|error| {
-                    tracing::error!(bot = %bot.id, %error, "failed to load variables");
-                    "could not load saved variables".to_owned()
+                    tracing::error!(bot = %bot.id, %error, "failed to reserve execution quota");
+                    "could not reserve the execution quota".to_owned()
                 })?
+            {
+                Ok(executions)
+            } else {
+                Err("monthly execution limit reached for this bot's plan".to_owned())
+            }
         }
-        _ => SavedVariables::default(),
-    };
-    Ok(program.handle(event, &saved, &mut ThreadRandom))
+    }
 }
 
 /// Record a run that could not even start.
