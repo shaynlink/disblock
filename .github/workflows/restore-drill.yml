@@ -1,0 +1,50 @@
+name: Database restore drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      backup_uri:
+        description: Encrypted s3:// object to restore into the isolated drill database
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  restore:
+    # Protect this GitHub Environment with required reviewers. Its database URL
+    # must point to an isolated Neon branch, never staging or production.
+    environment: restore-drill
+    runs-on: ubuntu-24.04
+    env:
+      BACKUP_AGE_IDENTITY: ${{ secrets.BACKUP_AGE_IDENTITY }}
+      BACKUP_RESTORE_DATABASE_URL: ${{ secrets.BACKUP_RESTORE_DATABASE_URL }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_BACKUP_ROLE_ARN }}
+      BACKUP_URI: ${{ inputs.backup_uri }}
+    steps:
+      - name: Validate restore target
+        run: |
+          test -n "$BACKUP_AGE_IDENTITY"
+          test -n "$BACKUP_RESTORE_DATABASE_URL"
+          test -n "$AWS_REGION"
+          test -n "$AWS_ROLE_ARN"
+          case "$BACKUP_URI" in s3://*.age) ;; *) exit 1 ;; esac
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_BACKUP_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Install PostgreSQL client and encryption tool
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client age
+      - name: Restore and verify
+        run: |
+          aws s3 cp "$BACKUP_URI" backup.dump.age
+          printf '%s' "$BACKUP_AGE_IDENTITY" > age-key.txt
+          age --decrypt --identity age-key.txt --output backup.dump backup.dump.age
+          pg_restore --clean --if-exists --no-owner --no-privileges \
+            --dbname "$BACKUP_RESTORE_DATABASE_URL" backup.dump
+          psql "$BACKUP_RESTORE_DATABASE_URL" --set ON_ERROR_STOP=on \
+            --command "SELECT count(*) AS users FROM users; SELECT count(*) AS bots FROM bots;"
+          rm -f backup.dump.age backup.dump age-key.txt

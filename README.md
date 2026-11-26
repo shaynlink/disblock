@@ -72,6 +72,10 @@ builds: `cargo sqlx prepare --workspace`.
 
 ## Deploy
 
+For CI/CD, staging, Sentry, health alerts, encrypted backups and restoration
+drills, see [the operations runbook](docs/operations.md) before the first
+deployment.
+
 ### 1. Neon
 
 Create a project in an EU region and copy its **direct** connection string

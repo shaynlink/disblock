@@ -219,10 +219,10 @@ async fn webhook(
 
     // The cache has committed before we change a running program. Failure is
     // logged so Stripe does not repeatedly deliver an otherwise valid event.
-    if let Some(bot_id) = bot_to_refresh {
-        if let Err(error) = state.runtime.refresh_program(bot_id).await {
-            tracing::warn!(bot = %bot_id, %error, "could not refresh billing limits");
-        }
+    if let Some(bot_id) = bot_to_refresh
+        && let Err(error) = state.runtime.refresh_program(bot_id).await
+    {
+        tracing::warn!(bot = %bot_id, %error, "could not refresh billing limits");
     }
     Ok(StatusCode::OK)
 }
