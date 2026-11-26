@@ -1,15 +1,9 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from "react";
-import { Navigate, Route, Routes } from "react-router";
+import { useCallback, useEffect, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { ApiError, api } from "./api.ts";
-import { Header } from "./components/Header.tsx";
-import { Dashboard } from "./pages/Dashboard.tsx";
-import { Landing } from "./pages/Landing.tsx";
+import { Shell } from "./components/Shell.tsx";
+import { LoginPage } from "./pages/LoginPage.tsx";
 import type { User } from "./types.ts";
-
-// The block editor pulls in Blockly, so it only loads on a bot's page.
-const BotPage = lazy(() =>
-  import("./pages/BotPage.tsx").then((module) => ({ default: module.BotPage })),
-);
 
 type Session =
   | { state: "loading" }
@@ -50,28 +44,20 @@ export default function App() {
 
   switch (session.state) {
     case "loading":
-      return <div className="splash">Loading…</div>;
-    case "error":
-      return <div className="splash">{session.message}. Refresh the page to try again.</div>;
-    case "signed-out":
-      return <Landing />;
-    case "signed-in":
       return (
-        <div className="app">
-          <Header user={session.user} onLogout={logout} />
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route
-              path="/bots/:id"
-              element={
-                <Suspense fallback={<main className="page muted">Loading the editor…</main>}>
-                  <BotPage />
-                </Suspense>
-              }
-            />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+        <div className="flex min-h-screen items-center justify-center">
+          <Loader2 className="size-8 animate-spin text-primary" />
         </div>
       );
+    case "error":
+      return (
+        <div className="flex min-h-screen items-center justify-center p-6 text-center text-muted-foreground">
+          {session.message}. Refresh the page to try again.
+        </div>
+      );
+    case "signed-out":
+      return <LoginPage />;
+    case "signed-in":
+      return <Shell user={session.user} onLogout={logout} />;
   }
 }

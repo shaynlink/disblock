@@ -1,9 +1,9 @@
 import * as Blockly from "blockly";
 
-const TRIGGER_COLOUR = "#5865f2";
-const OPTION_COLOUR = "#eb459e";
-const ACTION_COLOUR = "#23a55a";
-const ROLE_COLOUR = "#f0b232";
+const TRIGGER_COLOUR = "#6366f1";
+const OPTION_COLOUR = "#ec4899";
+const ACTION_COLOUR = "#22c55e";
+const ROLE_COLOUR = "#f59e0b";
 
 const PLACEHOLDERS =
   "Placeholders: {user}, {user.name}, {user.id}, {channel}, {server.id}, {option.NAME}";
@@ -185,24 +185,25 @@ export const toolbox: Blockly.utils.toolbox.ToolboxDefinition = {
   ],
 };
 
+/** Light theme matching the app's neutral palette. */
 export function createTheme(): Blockly.Theme {
   return Blockly.Theme.defineTheme("disblock", {
     name: "disblock",
     base: Blockly.Themes.Classic,
     componentStyles: {
-      workspaceBackgroundColour: "#1e1f22",
-      toolboxBackgroundColour: "#2b2d31",
-      toolboxForegroundColour: "#f2f3f5",
-      flyoutBackgroundColour: "#313338",
-      flyoutForegroundColour: "#dbdee1",
-      flyoutOpacity: 0.97,
-      scrollbarColour: "#4e5058",
-      scrollbarOpacity: 0.7,
-      insertionMarkerColour: "#ffffff",
-      insertionMarkerOpacity: 0.3,
-      cursorColour: "#dbdee1",
+      workspaceBackgroundColour: "#ffffff",
+      toolboxBackgroundColour: "#ffffff",
+      toolboxForegroundColour: "#171717",
+      flyoutBackgroundColour: "#f5f5f5",
+      flyoutForegroundColour: "#404040",
+      flyoutOpacity: 1,
+      scrollbarColour: "#a3a3a3",
+      scrollbarOpacity: 0.5,
+      insertionMarkerColour: "#171717",
+      insertionMarkerOpacity: 0.2,
+      cursorColour: "#171717",
     },
-    fontStyle: { family: "inherit", size: 11 },
+    fontStyle: { family: "Inter Variable, system-ui, sans-serif", size: 11 },
   });
 }
 
