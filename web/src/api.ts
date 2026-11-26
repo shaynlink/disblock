@@ -1,11 +1,21 @@
-import type { Bot, BotDetail, ExecutionEntry, Program, User } from "./types.ts";
+import type {
+  Bot,
+  BotDetail,
+  BotIntents,
+  ErrorLocation,
+  ExecutionEntry,
+  Program,
+  User,
+} from "./types.ts";
 
 export class ApiError extends Error {
   readonly status: number;
+  readonly location?: ErrorLocation;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, location?: ErrorLocation) {
     super(message);
     this.status = status;
+    this.location = location;
   }
 }
 
@@ -19,6 +29,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
+    let location: ErrorLocation | undefined;
     try {
       const payload: unknown = await response.json();
       if (
@@ -29,10 +40,19 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       ) {
         message = payload.error;
       }
+      if (
+        payload &&
+        typeof payload === "object" &&
+        "location" in payload &&
+        payload.location &&
+        typeof payload.location === "object"
+      ) {
+        location = payload.location as ErrorLocation;
+      }
     } catch {
       // The body was not JSON, keep the generic message.
     }
-    throw new ApiError(response.status, message);
+    throw new ApiError(response.status, message, location);
   }
 
   if (response.status === 204) {
@@ -49,6 +69,7 @@ export const api = {
   addBot: (token: string) => request<Bot>("POST", "/bots", { token }),
   setEnabled: (id: string, enabled: boolean) => request<void>("PATCH", `/bots/${id}`, { enabled }),
   deleteBot: (id: string) => request<void>("DELETE", `/bots/${id}`),
+  botIntents: (id: string) => request<BotIntents>("GET", `/bots/${id}/intents`),
   saveProgram: (id: string, workspace: object, program: Program) =>
     request<void>("PUT", `/bots/${id}/program`, { workspace, program }),
   executions: (id: string) => request<ExecutionEntry[]>("GET", `/bots/${id}/executions`),

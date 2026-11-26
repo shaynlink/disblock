@@ -20,11 +20,11 @@ actions, execution history. Enough for toy bots, not for paying customers.
 | 1 | Stripe subscriptions: plans, checkout, customer portal, webhooks, limits enforced by the server | |
 | 2 | Logic blocks: if/else, comparisons, and/or/not, has role, random, math, wait, stop | done |
 | 3 | Persistent data: per-server and per-member variables (counters, points, levels) | done |
-| 4 | Rich messages: embeds, buttons and select menus, with "on click" triggers | |
-| 5 | Moderation actions: timeout, kick, ban, delete message, DM a member | |
+| 4 | Rich messages: embeds, buttons and select menus, with "on click" triggers | done |
+| 5 | Moderation actions: timeout, kick, ban, delete message, DM a member | done |
 | 6 | More events: member leaves, reaction added/removed, scheduled tasks | |
 | 7 | Ready-made templates: welcome, moderation, reaction roles, tickets, levels | |
-| 8 | Validation in the editor: errors on the faulty block, missing intents detected before saving | |
+| 8 | Validation in the editor: errors on the faulty block, missing intents detected before saving | done |
 | 9 | Legal and account: legal notice, terms, privacy policy, GDPR export and deletion | |
 | 10 | Hosting reliability: resume Discord sessions across deploys, execution limits per plan | |
 | 11 | Operations: CI/CD, staging, error tracking, alerts, database backups | |

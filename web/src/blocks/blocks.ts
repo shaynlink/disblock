@@ -3,14 +3,17 @@ import * as Blockly from "blockly";
 const TRIGGER_COLOUR = "#6366f1";
 const OPTION_COLOUR = "#ec4899";
 const ACTION_COLOUR = "#22c55e";
+const EMBED_COLOUR = "#2563eb";
+const COMPONENT_COLOUR = "#f97316";
 const ROLE_COLOUR = "#f59e0b";
+const MODERATION_COLOUR = "#ef4444";
 const LOGIC_COLOUR = "#0ea5e9";
 const VALUE_COLOUR = "#14b8a6";
 const VARIABLE_COLOUR = "#a855f7";
 const FLOW_COLOUR = "#64748b";
 
 const PLACEHOLDERS =
-  "Placeholders: {user}, {user.name}, {user.id}, {channel}, {server.id}, {option.NAME}, {var:NAME}, {member:NAME}, {server:NAME}";
+  "Placeholders: {user}, {user.name}, {user.id}, {channel}, {server.id}, {option.NAME}, {selected}, {var:NAME}, {member:NAME}, {server:NAME}";
 const NAME_EXTENSION = "disblock_name_field";
 const VARIABLE_EXTENSION = "disblock_variable_field";
 
@@ -73,6 +76,25 @@ const definitions = [
     tooltip: "Runs when a message contains this text. Needs the Message Content intent.",
   },
   {
+    type: "button_click",
+    message0: "when button ID %1 is clicked",
+    args0: [{ type: "field_input", name: "ID", text: "verify" }],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
+    colour: TRIGGER_COLOUR,
+    tooltip: "Runs when someone clicks a button with this ID.",
+  },
+  {
+    type: "select_menu_trigger",
+    message0: "when select menu ID %1 is chosen",
+    args0: [{ type: "field_input", name: "ID", text: "menu" }],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
+    colour: TRIGGER_COLOUR,
+    tooltip:
+      "Runs when someone picks an option from a select menu with this ID. Use {selected} or the selected value block.",
+  },
+  {
     type: "command_option",
     message0: "option %1 %2 required %3",
     args0: [
@@ -109,6 +131,21 @@ const definitions = [
     tooltip: `Answer the command or the message. ${PLACEHOLDERS}`,
   },
   {
+    type: "reply_rich",
+    message0: "reply with rich message %1",
+    args0: [{ type: "field_input", name: "CONTENT", text: "" }],
+    message1: "only visible to them %1",
+    args1: [{ type: "field_checkbox", name: "EPHEMERAL", checked: false }],
+    message2: "embeds %1",
+    args2: [{ type: "input_statement", name: "EMBEDS", check: "embed" }],
+    message3: "buttons & menus %1",
+    args3: [{ type: "input_statement", name: "COMPONENTS", check: "component" }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: ACTION_COLOUR,
+    tooltip: `Answer with optional text, embeds, buttons, and select menus. ${PLACEHOLDERS}`,
+  },
+  {
     type: "send_message",
     message0: "send %1",
     args0: [{ type: "field_input", name: "CONTENT", text: "Welcome {user}!" }],
@@ -118,6 +155,208 @@ const definitions = [
     nextStatement: "action",
     colour: ACTION_COLOUR,
     tooltip: `Right-click a channel in Discord and copy its ID (Developer Mode). ${PLACEHOLDERS}`,
+  },
+  {
+    type: "send_rich_message",
+    message0: "send rich message %1",
+    args0: [{ type: "field_input", name: "CONTENT", text: "" }],
+    message1: "in channel ID %1",
+    args1: [{ type: "field_input", name: "CHANNEL_ID", text: "" }],
+    message2: "embeds %1",
+    args2: [{ type: "input_statement", name: "EMBEDS", check: "embed" }],
+    message3: "buttons & menus %1",
+    args3: [{ type: "input_statement", name: "COMPONENTS", check: "component" }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: ACTION_COLOUR,
+    tooltip: `Send a rich message with optional text, embeds, buttons, and select menus. ${PLACEHOLDERS}`,
+  },
+  {
+    type: "update_message",
+    message0: "update clicked message %1",
+    args0: [{ type: "field_input", name: "CONTENT", text: "" }],
+    message1: "embeds %1",
+    args1: [{ type: "input_statement", name: "EMBEDS", check: "embed" }],
+    message2: "buttons & menus %1",
+    args2: [{ type: "input_statement", name: "COMPONENTS", check: "component" }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: ACTION_COLOUR,
+    tooltip: `Edit the message whose button or menu was clicked. Leave text and embeds empty to only update buttons and menus. ${PLACEHOLDERS}`,
+  },
+  {
+    type: "embed",
+    message0: "embed title %1",
+    args0: [{ type: "field_input", name: "TITLE", text: "Title" }],
+    message1: "description %1",
+    args1: [{ type: "field_input", name: "DESCRIPTION", text: "Message text" }],
+    message2: "color %1 timestamp %2",
+    args2: [
+      { type: "field_input", name: "COLOR", text: "#5865F2" },
+      { type: "field_checkbox", name: "TIMESTAMP", checked: false },
+    ],
+    message3: "extras %1",
+    args3: [{ type: "input_statement", name: "PARTS", check: "embed_part" }],
+    previousStatement: "embed",
+    nextStatement: "embed",
+    colour: EMBED_COLOUR,
+    tooltip: `A rich Discord embed card. Color is a hex code like #5865F2. ${PLACEHOLDERS}`,
+  },
+  {
+    type: "embed_field",
+    message0: "field %1 value %2 inline %3",
+    args0: [
+      { type: "field_input", name: "NAME", text: "Field" },
+      { type: "field_input", name: "VALUE", text: "Value" },
+      { type: "field_checkbox", name: "INLINE", checked: false },
+    ],
+    previousStatement: "embed_part",
+    nextStatement: "embed_part",
+    colour: EMBED_COLOUR,
+    tooltip: `Add a field to the embed (up to 25). ${PLACEHOLDERS}`,
+  },
+  {
+    type: "embed_author",
+    message0: "author %1 icon URL %2",
+    args0: [
+      { type: "field_input", name: "NAME", text: "{user.name}" },
+      { type: "field_input", name: "ICON_URL", text: "" },
+    ],
+    message1: "link URL %1",
+    args1: [{ type: "field_input", name: "URL", text: "" }],
+    previousStatement: "embed_part",
+    nextStatement: "embed_part",
+    colour: EMBED_COLOUR,
+    tooltip: `Set the author header of the embed. ${PLACEHOLDERS}`,
+  },
+  {
+    type: "embed_footer",
+    message0: "footer %1 icon URL %2",
+    args0: [
+      { type: "field_input", name: "TEXT", text: "Footer" },
+      { type: "field_input", name: "ICON_URL", text: "" },
+    ],
+    previousStatement: "embed_part",
+    nextStatement: "embed_part",
+    colour: EMBED_COLOUR,
+    tooltip: `Set the footer text of the embed. ${PLACEHOLDERS}`,
+  },
+  {
+    type: "embed_image",
+    message0: "image URL %1",
+    args0: [{ type: "field_input", name: "URL", text: "" }],
+    previousStatement: "embed_part",
+    nextStatement: "embed_part",
+    colour: EMBED_COLOUR,
+    tooltip: "Large image shown at the bottom of the embed (http:// or https://).",
+  },
+  {
+    type: "embed_thumbnail",
+    message0: "thumbnail URL %1",
+    args0: [{ type: "field_input", name: "URL", text: "" }],
+    previousStatement: "embed_part",
+    nextStatement: "embed_part",
+    colour: EMBED_COLOUR,
+    tooltip: "Small image shown at the top-right of the embed (http:// or https://).",
+  },
+  {
+    type: "embed_url",
+    message0: "title URL %1",
+    args0: [{ type: "field_input", name: "URL", text: "" }],
+    previousStatement: "embed_part",
+    nextStatement: "embed_part",
+    colour: EMBED_COLOUR,
+    tooltip: "Makes the embed title a clickable link (http:// or https://).",
+  },
+  {
+    type: "component_button",
+    message0: "button %1 style %2 ID %3",
+    args0: [
+      { type: "field_input", name: "LABEL", text: "Click me" },
+      {
+        type: "field_dropdown",
+        name: "STYLE",
+        options: [
+          ["blue", "primary"],
+          ["grey", "secondary"],
+          ["green", "success"],
+          ["red", "danger"],
+        ],
+      },
+      { type: "field_input", name: "ID", text: "verify" },
+    ],
+    message1: "emoji %1 disabled %2",
+    args1: [
+      { type: "field_input", name: "EMOJI", text: "" },
+      { type: "field_checkbox", name: "DISABLED", checked: false },
+    ],
+    previousStatement: "component",
+    nextStatement: "component",
+    colour: COMPONENT_COLOUR,
+    tooltip: `An interactive button. Handle clicks with "when button ID ... is clicked". ${PLACEHOLDERS}`,
+  },
+  {
+    type: "component_link_button",
+    message0: "link button %1 URL %2",
+    args0: [
+      { type: "field_input", name: "LABEL", text: "Open link" },
+      { type: "field_input", name: "URL", text: "https://example.com" },
+    ],
+    message1: "emoji %1 disabled %2",
+    args1: [
+      { type: "field_input", name: "EMOJI", text: "" },
+      { type: "field_checkbox", name: "DISABLED", checked: false },
+    ],
+    previousStatement: "component",
+    nextStatement: "component",
+    colour: COMPONENT_COLOUR,
+    tooltip: `Opens a web URL when clicked (does not trigger the bot). ${PLACEHOLDERS}`,
+  },
+  {
+    type: "component_select_menu",
+    message0: "select menu ID %1 placeholder %2",
+    args0: [
+      { type: "field_input", name: "ID", text: "menu" },
+      { type: "field_input", name: "PLACEHOLDER", text: "Choose an option…" },
+    ],
+    message1: "min %1 max %2 disabled %3",
+    args1: [
+      { type: "field_number", name: "MIN", value: 1, min: 1, max: 25, precision: 1 },
+      { type: "field_number", name: "MAX", value: 1, min: 1, max: 25, precision: 1 },
+      { type: "field_checkbox", name: "DISABLED", checked: false },
+    ],
+    message2: "options %1",
+    args2: [{ type: "input_statement", name: "OPTIONS", check: "select_option" }],
+    previousStatement: "component",
+    nextStatement: "component",
+    colour: COMPONENT_COLOUR,
+    tooltip: `A dropdown menu (up to 25 options). Handle choices with "when select menu ID ... is chosen". ${PLACEHOLDERS}`,
+  },
+  {
+    type: "select_option",
+    message0: "option %1 value %2",
+    args0: [
+      { type: "field_input", name: "LABEL", text: "Option 1" },
+      { type: "field_input", name: "VALUE", text: "option_1" },
+    ],
+    message1: "description %1 emoji %2 default %3",
+    args1: [
+      { type: "field_input", name: "DESCRIPTION", text: "" },
+      { type: "field_input", name: "EMOJI", text: "" },
+      { type: "field_checkbox", name: "DEFAULT", checked: false },
+    ],
+    previousStatement: "select_option",
+    nextStatement: "select_option",
+    colour: COMPONENT_COLOUR,
+    tooltip: `One choice in a select menu. Its value becomes {selected} when chosen. ${PLACEHOLDERS}`,
+  },
+  {
+    type: "component_new_row",
+    message0: "new row",
+    previousStatement: "component",
+    nextStatement: "component",
+    colour: COMPONENT_COLOUR,
+    tooltip: "Starts a new line of buttons below the previous ones (up to 5 rows per message).",
   },
   {
     type: "react",
@@ -145,6 +384,66 @@ const definitions = [
     nextStatement: "action",
     colour: ROLE_COLOUR,
     tooltip: "Removes the role from the member. The bot's role must be above it.",
+  },
+  {
+    type: "timeout_member",
+    message0: "timeout member %1 for %2 minutes",
+    args0: [
+      { type: "field_input", name: "MEMBER_ID", text: "{user.id}" },
+      { type: "field_number", name: "MINUTES", value: 10, min: 1, max: 40320, precision: 1 },
+    ],
+    message1: "reason %1",
+    args1: [{ type: "field_input", name: "REASON", text: "" }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: MODERATION_COLOUR,
+    tooltip:
+      "Prevents a member from communicating for up to 28 days. Use {user.id} for the member who triggered this, or {option.member} for a user command option. The bot needs Moderate Members.",
+  },
+  {
+    type: "kick_member",
+    message0: "kick member %1",
+    args0: [{ type: "field_input", name: "MEMBER_ID", text: "{user.id}" }],
+    message1: "reason %1",
+    args1: [{ type: "field_input", name: "REASON", text: "" }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: MODERATION_COLOUR,
+    tooltip:
+      "Removes a member from the server. Use {user.id} for the member who triggered this, or {option.member} for a user command option. The bot needs Kick Members.",
+  },
+  {
+    type: "ban_member",
+    message0: "ban member %1",
+    args0: [{ type: "field_input", name: "MEMBER_ID", text: "{user.id}" }],
+    message1: "reason %1",
+    args1: [{ type: "field_input", name: "REASON", text: "" }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: MODERATION_COLOUR,
+    tooltip:
+      "Bans a member from the server. Use {user.id} for the member who triggered this, or {option.member} for a user command option. The bot needs Ban Members.",
+  },
+  {
+    type: "delete_triggering_message",
+    message0: "delete triggering message",
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: MODERATION_COLOUR,
+    tooltip:
+      "Deletes the message that matched a message trigger. The bot needs Manage Messages in that channel.",
+  },
+  {
+    type: "direct_message_member",
+    message0: "direct message member %1",
+    args0: [{ type: "field_input", name: "MEMBER_ID", text: "{user.id}" }],
+    message1: "message %1",
+    args1: [{ type: "field_input", name: "CONTENT", text: "Please review the server rules." }],
+    previousStatement: "action",
+    nextStatement: "action",
+    colour: MODERATION_COLOUR,
+    tooltip:
+      "Sends a private message. Use {user.id} for the member who triggered this, or {option.member} for a user command option.",
   },
   {
     type: "logic_if",
@@ -257,6 +556,13 @@ const definitions = [
     colour: VALUE_COLOUR,
     extensions: [NAME_EXTENSION],
     tooltip: "The value given to this slash command option, empty when it was left out.",
+  },
+  {
+    type: "value_selected",
+    message0: "selected value",
+    output: null,
+    colour: VALUE_COLOUR,
+    tooltip: "The option value(s) chosen in a select menu trigger.",
   },
   {
     type: "value_random",
@@ -383,6 +689,8 @@ export const toolbox: Blockly.utils.toolbox.ToolboxDefinition = {
         { kind: "block", type: "slash_command" },
         { kind: "block", type: "member_join" },
         { kind: "block", type: "message_contains" },
+        { kind: "block", type: "button_click" },
+        { kind: "block", type: "select_menu_trigger" },
       ],
     },
     {
@@ -419,6 +727,7 @@ export const toolbox: Blockly.utils.toolbox.ToolboxDefinition = {
         { kind: "block", type: "value_text" },
         { kind: "block", type: "value_number" },
         { kind: "block", type: "value_option" },
+        { kind: "block", type: "value_selected" },
         {
           kind: "block",
           type: "value_random",
@@ -456,8 +765,54 @@ export const toolbox: Blockly.utils.toolbox.ToolboxDefinition = {
       colour: ACTION_COLOUR,
       contents: [
         { kind: "block", type: "reply" },
+        { kind: "block", type: "reply_rich" },
         { kind: "block", type: "send_message" },
+        { kind: "block", type: "send_rich_message" },
+        { kind: "block", type: "update_message" },
         { kind: "block", type: "react" },
+      ],
+    },
+    {
+      kind: "category",
+      name: "Embeds",
+      colour: EMBED_COLOUR,
+      contents: [
+        { kind: "block", type: "embed" },
+        { kind: "block", type: "embed_field" },
+        { kind: "block", type: "embed_author" },
+        { kind: "block", type: "embed_footer" },
+        { kind: "block", type: "embed_image" },
+        { kind: "block", type: "embed_thumbnail" },
+        { kind: "block", type: "embed_url" },
+      ],
+    },
+    {
+      kind: "category",
+      name: "Buttons & Menus",
+      colour: COMPONENT_COLOUR,
+      contents: [
+        { kind: "block", type: "component_button" },
+        { kind: "block", type: "component_link_button" },
+        {
+          kind: "block",
+          type: "component_select_menu",
+          inputs: {
+            OPTIONS: {
+              block: {
+                type: "select_option",
+                fields: { LABEL: "Option 1", VALUE: "option_1" },
+                next: {
+                  block: {
+                    type: "select_option",
+                    fields: { LABEL: "Option 2", VALUE: "option_2" },
+                  },
+                },
+              },
+            },
+          },
+        },
+        { kind: "block", type: "select_option" },
+        { kind: "block", type: "component_new_row" },
       ],
     },
     {
@@ -467,6 +822,18 @@ export const toolbox: Blockly.utils.toolbox.ToolboxDefinition = {
       contents: [
         { kind: "block", type: "add_role" },
         { kind: "block", type: "remove_role" },
+      ],
+    },
+    {
+      kind: "category",
+      name: "Moderation",
+      colour: MODERATION_COLOUR,
+      contents: [
+        { kind: "block", type: "timeout_member" },
+        { kind: "block", type: "kick_member" },
+        { kind: "block", type: "ban_member" },
+        { kind: "block", type: "delete_triggering_message" },
+        { kind: "block", type: "direct_message_member" },
       ],
     },
     {

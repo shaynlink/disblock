@@ -1,21 +1,46 @@
 import * as Blockly from "blockly";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Loader2, Save } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw, Save } from "lucide-react";
 import { useBlocker } from "react-router";
-import { api } from "../api.ts";
+import { ApiError, api } from "../api.ts";
 import { createTheme, registerBlocks, starterWorkspace, toolbox } from "../blocks/blocks.ts";
-import { GenerateError, generateProgram } from "../blocks/generate.ts";
-import type { BotDetail, Program } from "../types.ts";
+import {
+  GenerateError,
+  type MissingIntent,
+  findMissingIntents,
+  generateProgramWithMap,
+  resolveErrorBlockId,
+} from "../blocks/generate.ts";
+import { buttonClass } from "../lib/styles.ts";
+import type { BotDetail, BotIntents, Program } from "../types.ts";
 import { Button } from "./ui.tsx";
 
 type SaveState =
   | { kind: "idle" }
+  | { kind: "checking" }
   | { kind: "saving" }
   | { kind: "saved" }
   | { kind: "error"; message: string };
 
+type IntentsState =
+  | { kind: "loading" }
+  | { kind: "ready"; intents: BotIntents }
+  | { kind: "error" };
+
+const INTENT_WARNING_ID = "disblock_intent";
+const SAVE_WARNING_ID = "disblock_save";
+
 function hasBlocks(workspace: object): boolean {
   return "blocks" in workspace;
+}
+
+function focusWarningBlock(editor: Blockly.WorkspaceSvg, block: Blockly.BlockSvg) {
+  Blockly.common.setSelected(block);
+  editor.centerOnBlock(block.id);
+  const icon = block.getIcon(Blockly.icons.IconType.WARNING);
+  if (icon instanceof Blockly.icons.WarningIcon) {
+    void icon.setBubbleVisible(true);
+  }
 }
 
 export function Editor({
@@ -28,12 +53,62 @@ export function Editor({
   const container = useRef<HTMLDivElement>(null);
   const workspace = useRef<Blockly.WorkspaceSvg | null>(null);
   const savedSnapshot = useRef("");
+  const intentWarningBlocks = useRef<Set<string>>(new Set());
+  const saveWarningBlock = useRef<string | null>(null);
+  const latestIntents = useRef<IntentsState>({ kind: "loading" });
+
   const [dirty, setDirty] = useState(false);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
+  const [intentsState, setIntentsState] = useState<IntentsState>({ kind: "loading" });
+  const [missingIntents, setMissingIntents] = useState<MissingIntent[]>([]);
+  const [checkingIntents, setCheckingIntents] = useState(false);
 
   // The workspace is loaded once per bot: later saves update `bot.workspace`
   // through `onSaved`, and must not reload the editor under the user.
   const initialWorkspace = useRef(bot.workspace);
+
+  const syncIntentWarnings = useCallback(
+    (editor: Blockly.WorkspaceSvg, state: IntentsState): MissingIntent[] => {
+      for (const id of intentWarningBlocks.current) {
+        editor.getBlockById(id)?.setWarningText(null, INTENT_WARNING_ID);
+      }
+      intentWarningBlocks.current.clear();
+
+      if (state.kind !== "ready") {
+        setMissingIntents([]);
+        return [];
+      }
+      const missing = findMissingIntents(editor, state.intents);
+      for (const item of missing) {
+        editor.getBlockById(item.blockId)?.setWarningText(item.message, INTENT_WARNING_ID);
+        intentWarningBlocks.current.add(item.blockId);
+      }
+      setMissingIntents(missing);
+      return missing;
+    },
+    [],
+  );
+
+  const clearSaveWarning = useCallback((editor: Blockly.WorkspaceSvg) => {
+    if (saveWarningBlock.current) {
+      editor.getBlockById(saveWarningBlock.current)?.setWarningText(null, SAVE_WARNING_ID);
+      saveWarningBlock.current = null;
+    }
+  }, []);
+
+  const showSaveError = useCallback(
+    (editor: Blockly.WorkspaceSvg, blockId: string | null, message: string) => {
+      clearSaveWarning(editor);
+      const block = blockId ? editor.getBlockById(blockId) : null;
+      if (block) {
+        block.setWarningText(message, SAVE_WARNING_ID);
+        saveWarningBlock.current = block.id;
+        focusWarningBlock(editor, block);
+      }
+      setSave({ kind: "error", message });
+    },
+    [clearSaveWarning],
+  );
 
   useEffect(() => {
     const element = container.current;
@@ -67,42 +142,126 @@ export function Editor({
       setDirty(
         JSON.stringify(Blockly.serialization.workspaces.save(editor)) !== savedSnapshot.current,
       );
+      if (
+        event.type === Blockly.Events.BLOCK_CHANGE ||
+        event.type === Blockly.Events.BLOCK_MOVE ||
+        event.type === Blockly.Events.BLOCK_DELETE ||
+        event.type === Blockly.Events.BLOCK_CREATE
+      ) {
+        clearSaveWarning(editor);
+        setSave((current) => (current.kind === "error" ? { kind: "idle" } : current));
+      }
+      syncIntentWarnings(editor, latestIntents.current);
     });
 
     const resize = new ResizeObserver(() => Blockly.svgResize(editor));
     resize.observe(element);
 
+    let active = true;
+    latestIntents.current = { kind: "loading" };
+    setIntentsState({ kind: "loading" });
+    api
+      .botIntents(bot.id)
+      .then((intents) => {
+        if (!active) {
+          return;
+        }
+        const next: IntentsState = { kind: "ready", intents };
+        latestIntents.current = next;
+        setIntentsState(next);
+        syncIntentWarnings(editor, next);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        const next: IntentsState = { kind: "error" };
+        latestIntents.current = next;
+        setIntentsState(next);
+        syncIntentWarnings(editor, next);
+      });
+
+    const trackedIntentWarnings = intentWarningBlocks.current;
+
     return () => {
+      active = false;
       resize.disconnect();
       editor.dispose();
       workspace.current = null;
+      trackedIntentWarnings.clear();
+      saveWarningBlock.current = null;
     };
-  }, [bot.id]);
+  }, [bot.id, clearSaveWarning, syncIntentWarnings]);
+
+  const recheckIntents = useCallback(async () => {
+    const editor = workspace.current;
+    if (!editor) {
+      return;
+    }
+    setCheckingIntents(true);
+    try {
+      const intents = await api.botIntents(bot.id);
+      const next: IntentsState = { kind: "ready", intents };
+      latestIntents.current = next;
+      setIntentsState(next);
+      const missing = syncIntentWarnings(editor, next);
+      if (missing.length === 0) {
+        setSave((current) => (current.kind === "error" ? { kind: "idle" } : current));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not check intents";
+      setSave({ kind: "error", message });
+    } finally {
+      setCheckingIntents(false);
+    }
+  }, [bot.id, syncIntentWarnings]);
 
   const saveProgram = useCallback(async () => {
     const editor = workspace.current;
     if (!editor) {
       return;
     }
-    for (const block of editor.getAllBlocks(false)) {
-      block.setWarningText(null);
-    }
+    clearSaveWarning(editor);
+
     let program: Program;
+    let map: ReturnType<typeof generateProgramWithMap>["map"];
     try {
-      program = generateProgram(editor);
+      ({ program, map } = generateProgramWithMap(editor));
     } catch (error) {
       if (!(error instanceof GenerateError)) {
         throw error;
       }
-      // Point at the incomplete block instead of saving.
-      const block = editor.getBlockById(error.blockId);
-      if (block) {
-        block.setWarningText(error.message);
-        Blockly.common.setSelected(block);
-        editor.centerOnBlock(block.id);
-      }
-      setSave({ kind: "error", message: error.message });
+      showSaveError(editor, error.blockId, error.message);
       return;
+    }
+
+    const needsPrivilegedIntent = program.handlers.some(
+      (handler) =>
+        handler.trigger.type === "member_join" || handler.trigger.type === "message_contains",
+    );
+    if (needsPrivilegedIntent) {
+      setSave({ kind: "checking" });
+      try {
+        const freshIntents = await api.botIntents(bot.id);
+        const next: IntentsState = { kind: "ready", intents: freshIntents };
+        latestIntents.current = next;
+        setIntentsState(next);
+        const missing = syncIntentWarnings(editor, next);
+        if (missing.length > 0) {
+          const first = missing[0];
+          const block = editor.getBlockById(first.blockId);
+          if (block) {
+            focusWarningBlock(editor, block);
+          }
+          setSave({ kind: "error", message: first.message });
+          return;
+        }
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 400) {
+          setSave({ kind: "error", message: error.message });
+          return;
+        }
+      }
     }
 
     setSave({ kind: "saving" });
@@ -114,12 +273,15 @@ export function Editor({
       setSave({ kind: "saved" });
       onSaved(state, program);
     } catch (error) {
-      setSave({
-        kind: "error",
-        message: error instanceof Error ? error.message : "Could not save",
-      });
+      const message = error instanceof Error ? error.message : "Could not save";
+      if (error instanceof ApiError && error.location) {
+        const blockId = resolveErrorBlockId(map, error.location);
+        showSaveError(editor, blockId, message);
+      } else {
+        setSave({ kind: "error", message });
+      }
     }
-  }, [bot.id, onSaved]);
+  }, [bot.id, clearSaveWarning, onSaved, showSaveError, syncIntentWarnings]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -154,6 +316,19 @@ export function Editor({
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
 
+  const uniqueMissingIntents = useMemo(() => {
+    const seen = new Set<MissingIntent["intent"]>();
+    return missingIntents.filter((item) => {
+      if (seen.has(item.intent)) {
+        return false;
+      }
+      seen.add(item.intent);
+      return true;
+    });
+  }, [missingIntents]);
+
+  const busy = save.kind === "checking" || save.kind === "saving";
+
   return (
     <div className="flex min-h-[560px] flex-1 flex-col overflow-hidden rounded-xl border bg-card shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-4 border-b px-4 py-3">
@@ -162,7 +337,8 @@ export function Editor({
           <p className="text-sm text-muted-foreground">
             Drag a trigger from the left, then stack actions inside it. Messages accept{" "}
             <code className="text-xs">{"{user}"}</code>,{" "}
-            <code className="text-xs">{"{option.NAME}"}</code> and saved variables like{" "}
+            <code className="text-xs">{"{option.NAME}"}</code>,{" "}
+            <code className="text-xs">{"{selected}"}</code> and saved variables like{" "}
             <code className="text-xs">{"{member:points}"}</code>.
           </p>
         </div>
@@ -176,15 +352,47 @@ export function Editor({
               Saved and live
             </span>
           )}
-          {dirty && save.kind !== "saving" && (
-            <span className="text-sm text-muted-foreground">Unsaved changes</span>
-          )}
-          <Button onClick={saveProgram} disabled={save.kind === "saving" || !dirty}>
-            {save.kind === "saving" ? <Loader2 className="animate-spin" /> : <Save />}
-            {save.kind === "saving" ? "Saving…" : "Save"}
+          {dirty && !busy && <span className="text-sm text-muted-foreground">Unsaved changes</span>}
+          <Button onClick={saveProgram} disabled={busy || !dirty}>
+            {busy ? <Loader2 className="animate-spin" /> : <Save />}
+            {save.kind === "checking"
+              ? "Checking intents…"
+              : save.kind === "saving"
+                ? "Saving…"
+                : "Save"}
           </Button>
         </div>
       </div>
+      {intentsState.kind === "ready" && uniqueMissingIntents.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm">
+          <div className="flex items-start gap-2 text-amber-950">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600" />
+            <p>
+              <span className="font-medium">
+                Missing Discord {uniqueMissingIntents.length === 1 ? "intent" : "intents"}:
+              </span>{" "}
+              {uniqueMissingIntents.map((item) => item.label).join(" and ")}. Enable{" "}
+              {uniqueMissingIntents.length === 1 ? "it" : "them"} under{" "}
+              <span className="font-medium">Bot → Privileged Gateway Intents</span> before saving.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href={`https://discord.com/developers/applications/${bot.application_id}/bot`}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonClass("outline", "sm")}
+            >
+              <ExternalLink />
+              Open Discord intents
+            </a>
+            <Button variant="outline" size="sm" onClick={recheckIntents} disabled={checkingIntents}>
+              <RefreshCw className={checkingIntents ? "animate-spin" : undefined} />
+              Re-check
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="min-h-0 flex-1" ref={container} />
     </div>
   );

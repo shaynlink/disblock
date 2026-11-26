@@ -1,7 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing};
-use disblock_program::Program;
+use disblock_program::{ErrorLocation, GatewayNeeds, Program, Trigger};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json as DbJson;
 use time::OffsetDateTime;
@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::CurrentUser;
 use crate::error::ApiError;
-use crate::runtime::{RuntimeError, bot_client, is_unauthorized};
+use crate::runtime::{BotIntents, RuntimeError, bot_client, is_unauthorized};
 
 /// Hosting is free during the beta, so accounts are capped.
 const MAX_BOTS_PER_USER: i64 = 5;
@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/bots", routing::get(list).post(create))
         .route("/bots/{id}", routing::get(get).patch(update).delete(remove))
+        .route("/bots/{id}/intents", routing::get(intents))
         .route("/bots/{id}/program", routing::put(save_program))
         .route("/bots/{id}/executions", routing::get(executions))
 }
@@ -236,6 +237,29 @@ async fn remove(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn intents(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<BotIntents>, ApiError> {
+    let owned = sqlx::query_scalar!(
+        "SELECT id FROM bots WHERE id = $1 AND owner_id = $2",
+        id,
+        user.id,
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    if owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let intents = state
+        .runtime
+        .fetch_intents(id)
+        .await
+        .map_err(runtime_error)?;
+    Ok(Json(intents))
+}
+
 #[derive(Deserialize)]
 struct SaveProgram {
     workspace: serde_json::Value,
@@ -248,9 +272,34 @@ async fn save_program(
     Path(id): Path<Uuid>,
     Json(body): Json<SaveProgram>,
 ) -> Result<StatusCode, ApiError> {
-    body.program
-        .compile()
-        .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    let compiled = body
+        .program
+        .compile_diagnosed()
+        .map_err(|failure| ApiError::ProgramError {
+            message: failure.error.to_string(),
+            location: failure.location,
+        })?;
+
+    let owned = sqlx::query_scalar!(
+        "SELECT id FROM bots WHERE id = $1 AND owner_id = $2",
+        id,
+        user.id,
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    if owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+
+    let needs = compiled.gateway_needs();
+    if needs.members || needs.messages {
+        let intents = state
+            .runtime
+            .fetch_intents(id)
+            .await
+            .map_err(runtime_error)?;
+        check_intents(&body.program, needs, intents)?;
+    }
 
     let enabled = sqlx::query_scalar!(
         "UPDATE bots SET workspace = $3, program = $4, updated_at = now()
@@ -271,6 +320,38 @@ async fn save_program(
         .await
         .map_err(runtime_error)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn check_intents(
+    program: &Program,
+    needs: GatewayNeeds,
+    intents: BotIntents,
+) -> Result<(), ApiError> {
+    if needs.members && !intents.members {
+        let handler = program
+            .handlers
+            .iter()
+            .position(|h| matches!(h.trigger, Trigger::MemberJoin {}))
+            .unwrap_or(0);
+        return Err(ApiError::ProgramError {
+            message: "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving."
+                .to_owned(),
+            location: Box::new(ErrorLocation::handler(handler)),
+        });
+    }
+    if needs.messages && !intents.message_content {
+        let handler = program
+            .handlers
+            .iter()
+            .position(|h| matches!(h.trigger, Trigger::MessageContains { .. }))
+            .unwrap_or(0);
+        return Err(ApiError::ProgramError {
+            message: "Message Content Intent is disabled in the Discord developer portal. Enable it under Bot before saving."
+                .to_owned(),
+            location: Box::new(ErrorLocation::handler(handler)),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -312,5 +393,60 @@ fn runtime_error(error: RuntimeError) -> ApiError {
         RuntimeError::Crypto(error) => ApiError::Crypto(error),
         RuntimeError::Program(error) => ApiError::BadRequest(error.to_string()),
         RuntimeError::Discord(message) => ApiError::BadRequest(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::intents_from_flags;
+    use twilight_model::oauth::ApplicationFlags;
+
+    #[test]
+    fn reads_privileged_intents_from_application_flags() {
+        assert_eq!(
+            intents_from_flags(None),
+            BotIntents {
+                members: false,
+                message_content: false,
+            }
+        );
+        assert_eq!(
+            intents_from_flags(Some(
+                ApplicationFlags::GATEWAY_GUILD_MEMBERS_LIMITED
+                    | ApplicationFlags::GATEWAY_MESSAGE_CONTENT
+            )),
+            BotIntents {
+                members: true,
+                message_content: true,
+            }
+        );
+    }
+
+    #[test]
+    fn locates_first_trigger_needing_missing_intent() {
+        let program: Program = serde_json::from_str(
+            r#"{"handlers":[
+                {"trigger":{"type":"slash_command","name":"ping","description":"Ping"},"actions":[{"type":"reply","content":"Pong"}]},
+                {"trigger":{"type":"message_contains","pattern":"hi"},"actions":[{"type":"react","emoji":"👋"}]}
+            ]}"#,
+        )
+        .unwrap();
+        let compiled = program.compile().unwrap();
+        let error = check_intents(
+            &program,
+            compiled.gateway_needs(),
+            BotIntents {
+                members: true,
+                message_content: false,
+            },
+        )
+        .expect_err("message content intent missing");
+        match error {
+            ApiError::ProgramError { location, .. } => {
+                assert_eq!(*location, ErrorLocation::handler(1));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

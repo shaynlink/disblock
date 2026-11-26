@@ -4,15 +4,23 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use disblock_program::{
-    CompiledProgram, Context, Effect, EmojiRef, Event, EventKind, Execution, Random, SavedVariables,
+    ButtonStyle, CompiledProgram, Context, Effect, EmojiRef, Event, EventKind, Execution,
+    MessagePayload, Random, RenderedButton, RenderedComponentRow, RenderedEmbed, SavedVariables,
 };
+use time::OffsetDateTime;
 use twilight_http::api_error::ApiError as DiscordApiError;
 use twilight_http::error::ErrorType;
-use twilight_http::request::channel::reaction::RequestReactionType;
+use twilight_http::request::{AuditLogReason, channel::reaction::RequestReactionType};
 use twilight_model::application::interaction::application_command::CommandOptionValue;
 use twilight_model::application::interaction::{Interaction, InteractionData, InteractionType};
 use twilight_model::channel::Message;
-use twilight_model::channel::message::MessageFlags;
+use twilight_model::channel::message::component::{
+    ActionRow, Button, ButtonStyle as TwilightButtonStyle, Component, ComponentType, SelectMenu,
+    SelectMenuOption, SelectMenuType,
+};
+use twilight_model::channel::message::{
+    AllowedMentions, Embed, EmojiReactionType, MentionType, MessageFlags,
+};
 use twilight_model::gateway::event::Event as GatewayEvent;
 use twilight_model::guild::Member;
 use twilight_model::http::interaction::{
@@ -23,7 +31,11 @@ use twilight_model::id::marker::{
     ChannelMarker, GuildMarker, InteractionMarker, MessageMarker, RoleMarker, UserMarker,
 };
 use twilight_model::user::User;
-use twilight_util::builder::interaction_response::ChannelMessageBuilder;
+use twilight_model::util::Timestamp;
+use twilight_util::builder::embed::{
+    EmbedAuthorBuilder, EmbedBuilder, EmbedFieldBuilder, EmbedFooterBuilder, ImageSource,
+};
+use twilight_util::builder::interaction_response::{ChannelMessageBuilder, UpdateMessageBuilder};
 
 use super::BotContext;
 use super::log::Record;
@@ -87,12 +99,6 @@ pub async fn handle(bot: Arc<BotContext>, program: Arc<CompiledProgram>, event: 
 }
 
 async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction: Interaction) {
-    if interaction.kind != InteractionType::ApplicationCommand {
-        return;
-    }
-    let Some(InteractionData::ApplicationCommand(data)) = &interaction.data else {
-        return;
-    };
     let Some(user) = interaction
         .member
         .as_ref()
@@ -101,57 +107,134 @@ async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction
     else {
         return;
     };
-
-    let options: Vec<(String, String)> = data
-        .options
-        .iter()
-        .filter_map(|option| render_option(&option.value).map(|value| (option.name.clone(), value)))
-        .collect();
     let roles = interaction
         .member
         .as_ref()
         .map(|member| role_ids(&member.roles))
         .unwrap_or_default();
-    let context = context_for(
-        user,
-        &roles,
-        interaction.guild_id,
-        interaction.channel.as_ref().map(|c| c.id),
-        &options,
-    );
-    let planned = plan(
-        bot,
-        program,
-        &Event {
-            kind: EventKind::SlashCommand { name: &data.name },
-            context,
-        },
-    )
-    .await;
+    let channel_id = interaction.channel.as_ref().map(|c| c.id);
 
+    match (interaction.kind, &interaction.data) {
+        (InteractionType::ApplicationCommand, Some(InteractionData::ApplicationCommand(data))) => {
+            let options: Vec<(String, String)> = data
+                .options
+                .iter()
+                .filter_map(|option| {
+                    render_option(&option.value).map(|value| (option.name.clone(), value))
+                })
+                .collect();
+            let context = context_for(
+                user,
+                &roles,
+                interaction.guild_id,
+                channel_id,
+                &options,
+                None,
+            );
+            run_interaction(
+                bot,
+                program,
+                &interaction,
+                user.id,
+                &Event {
+                    kind: EventKind::SlashCommand { name: &data.name },
+                    context,
+                },
+                false,
+                None,
+                &format!("/{}", data.name),
+                "This command is not available anymore.",
+            )
+            .await;
+        }
+        (InteractionType::MessageComponent, Some(InteractionData::MessageComponent(data))) => {
+            let selected = data.values.join(", ");
+            let (kind, selected_ref, label, missing) = match data.component_type {
+                ComponentType::Button => (
+                    EventKind::ButtonClick {
+                        id: &data.custom_id,
+                    },
+                    None,
+                    format!("button \"{}\"", data.custom_id),
+                    "This button is not available anymore.",
+                ),
+                ComponentType::TextSelectMenu
+                | ComponentType::UserSelectMenu
+                | ComponentType::RoleSelectMenu
+                | ComponentType::MentionableSelectMenu
+                | ComponentType::ChannelSelectMenu => (
+                    EventKind::SelectMenu {
+                        id: &data.custom_id,
+                    },
+                    Some(selected.as_str()),
+                    format!("select menu \"{}\"", data.custom_id),
+                    "This menu is not available anymore.",
+                ),
+                _ => return,
+            };
+            let context = context_for(
+                user,
+                &roles,
+                interaction.guild_id,
+                channel_id,
+                &[],
+                selected_ref,
+            );
+            let source_message = interaction.message.as_ref().map(|m| (m.channel_id, m.id));
+            run_interaction(
+                bot,
+                program,
+                &interaction,
+                user.id,
+                &Event { kind, context },
+                true,
+                source_message,
+                &label,
+                missing,
+            )
+            .await;
+        }
+        _ => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_interaction(
+    bot: &BotContext,
+    program: &CompiledProgram,
+    interaction: &Interaction,
+    user_id: Id<UserMarker>,
+    event: &Event<'_>,
+    is_component: bool,
+    source_message: Option<(Id<ChannelMarker>, Id<MessageMarker>)>,
+    trigger_label: &str,
+    missing_notice: &str,
+) {
+    let planned = plan(bot, program, event).await;
     let mut reply = Reply::Interaction(InteractionReply {
         id: interaction.id,
         token: &interaction.token,
+        is_component,
+        source_message,
+        original_is_source: false,
         state: ReplyState::Pending,
     });
     let target = Target {
         guild_id: interaction.guild_id,
-        user_id: user.id,
+        user_id,
     };
 
     let executions = match planned {
         Ok(executions) => executions,
         Err(error) => {
             reply.finish(bot, Some(FAILURE_NOTICE)).await;
-            record_failure(bot, &format!("/{}", data.name), error);
+            record_failure(bot, trigger_label, error);
             return;
         }
     };
     let Some(execution) = executions.into_iter().next() else {
-        // Discord still shows a command that was removed a moment ago.
-        reply
-            .finish(bot, Some("This command is not available anymore."))
-            .await;
+        // Discord still shows a command or component from an older message.
+        reply.finish(bot, Some(missing_notice)).await;
         return;
     };
     run(bot, execution, target, reply).await;
@@ -167,7 +250,7 @@ async fn on_member_add(
         return;
     }
     let roles = role_ids(&member.roles);
-    let context = context_for(&member.user, &roles, Some(guild_id), None, &[]);
+    let context = context_for(&member.user, &roles, Some(guild_id), None, &[], None);
     let target = Target {
         guild_id: Some(guild_id),
         user_id: member.user.id,
@@ -202,6 +285,7 @@ async fn on_message(bot: &BotContext, program: &CompiledProgram, message: &Messa
         message.guild_id,
         Some(message.channel_id),
         &[],
+        None,
     );
     let target = Target {
         guild_id: message.guild_id,
@@ -233,6 +317,7 @@ fn context_for<'a>(
     guild_id: Option<Id<GuildMarker>>,
     channel_id: Option<Id<ChannelMarker>>,
     options: &'a [(String, String)],
+    selected: Option<&'a str>,
 ) -> Context<'a> {
     Context {
         user_id: user.id.get(),
@@ -241,6 +326,7 @@ fn context_for<'a>(
         guild_id: guild_id.map(Id::get),
         channel_id: channel_id.map(Id::get),
         options,
+        selected,
     }
 }
 
@@ -336,23 +422,33 @@ async fn perform(
     };
 
     match effect {
-        Effect::Reply { content, ephemeral } => reply.send(bot, content, *ephemeral).await,
+        Effect::Reply { message, ephemeral } => reply.send(bot, message, *ephemeral).await,
         Effect::Wait { seconds } => {
             tokio::time::sleep(Duration::from_secs(u64::from(*seconds))).await;
             Ok(())
         }
         Effect::SendMessage {
             channel_id,
-            content,
+            message,
         } => {
             let channel_id =
                 Id::<ChannelMarker>::new_checked(*channel_id).ok_or("invalid channel ID")?;
-            http.create_message(channel_id)
-                .content(content)
-                .await
+            let (embeds, components) = build_rich(message)?;
+            let mut req = http.create_message(channel_id);
+            if let Some(content) = message.content.as_deref() {
+                req = req.content(content);
+            }
+            if !embeds.is_empty() {
+                req = req.embeds(&embeds);
+            }
+            if !components.is_empty() {
+                req = req.components(&components);
+            }
+            req.await
                 .map(drop)
                 .map_err(|error| describe(&error, "send the message"))
         }
+        Effect::UpdateMessage { message } => reply.update(bot, message).await,
         Effect::AddRole { role_id } => {
             let role_id = Id::new_checked(*role_id).ok_or("invalid role ID")?;
             http.add_guild_member_role(guild_id()?, target.user_id, role_id)
@@ -367,6 +463,78 @@ async fn perform(
                 .map(drop)
                 .map_err(|error| describe(&error, "remove the role"))
         }
+        Effect::Timeout {
+            member_id,
+            seconds,
+            reason,
+        } => {
+            let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
+            let until = OffsetDateTime::now_utc()
+                .checked_add(time::Duration::seconds(i64::from(*seconds)))
+                .ok_or("invalid timeout duration")?;
+            let until = Timestamp::from_secs(until.unix_timestamp())
+                .map_err(|error| format!("invalid timeout expiry: {error}"))?;
+            let mut request = http
+                .update_guild_member(guild_id()?, member_id)
+                .communication_disabled_until(Some(until));
+            if let Some(reason) = reason {
+                request = request.reason(reason);
+            }
+            request
+                .await
+                .map(drop)
+                .map_err(|error| describe(&error, "timeout the member"))
+        }
+        Effect::Kick { member_id, reason } => {
+            let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
+            let mut request = http.remove_guild_member(guild_id()?, member_id);
+            if let Some(reason) = reason {
+                request = request.reason(reason);
+            }
+            request
+                .await
+                .map(drop)
+                .map_err(|error| describe(&error, "kick the member"))
+        }
+        Effect::Ban { member_id, reason } => {
+            let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
+            let mut request = http.create_ban(guild_id()?, member_id);
+            if let Some(reason) = reason {
+                request = request.reason(reason);
+            }
+            request
+                .await
+                .map(drop)
+                .map_err(|error| describe(&error, "ban the member"))
+        }
+        Effect::DeleteMessage => {
+            let Reply::Message {
+                channel_id,
+                message_id,
+            } = *reply
+            else {
+                return Err("deleting a message needs a message trigger".to_owned());
+            };
+            http.delete_message(channel_id, message_id)
+                .await
+                .map(drop)
+                .map_err(|error| describe(&error, "delete the message"))
+        }
+        Effect::DirectMessage { member_id, content } => {
+            let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
+            let channel = http
+                .create_private_channel(member_id)
+                .await
+                .map_err(|error| describe(&error, "open a private channel"))?
+                .model()
+                .await
+                .map_err(|error| format!("could not open a private channel: {error}"))?;
+            http.create_message(channel.id)
+                .content(content)
+                .await
+                .map(drop)
+                .map_err(|error| describe(&error, "send the direct message"))
+        }
         Effect::React { emoji } => {
             let Reply::Message {
                 channel_id,
@@ -377,7 +545,7 @@ async fn perform(
             };
             let emoji = match emoji {
                 EmojiRef::Unicode(name) => RequestReactionType::Unicode { name },
-                EmojiRef::Custom { name, id } => RequestReactionType::Custom {
+                EmojiRef::Custom { name, id, .. } => RequestReactionType::Custom {
                     id: Id::new_checked(*id).ok_or("invalid emoji ID")?,
                     name: Some(name),
                 },
@@ -388,6 +556,189 @@ async fn perform(
                 .map_err(|error| describe(&error, "react"))
         }
     }
+}
+
+fn allowed_mentions() -> AllowedMentions {
+    AllowedMentions {
+        parse: vec![MentionType::Users],
+        ..AllowedMentions::default()
+    }
+}
+
+fn build_rich(payload: &MessagePayload) -> Result<(Vec<Embed>, Vec<Component>), String> {
+    let embeds = payload
+        .embeds
+        .iter()
+        .map(build_embed)
+        .collect::<Result<Vec<_>, _>>()?;
+    let components = payload
+        .components
+        .iter()
+        .map(build_component_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((embeds, components))
+}
+
+fn build_embed(rendered: &RenderedEmbed) -> Result<Embed, String> {
+    let mut builder = EmbedBuilder::new();
+    if let Some(title) = &rendered.title {
+        builder = builder.title(title);
+    }
+    if let Some(url) = &rendered.url {
+        builder = builder.url(url);
+    }
+    if let Some(description) = &rendered.description {
+        builder = builder.description(description);
+    }
+    if let Some(color) = rendered.color {
+        builder = builder.color(color);
+    }
+    if let Some(author) = &rendered.author {
+        let mut author_builder = EmbedAuthorBuilder::new(&author.name);
+        if let Some(url) = &author.url {
+            author_builder = author_builder.url(url);
+        }
+        if let Some(icon_url) = &author.icon_url {
+            author_builder = author_builder.icon_url(
+                ImageSource::url(icon_url)
+                    .map_err(|error| format!("invalid author icon URL: {error}"))?,
+            );
+        }
+        builder = builder.author(author_builder);
+    }
+    if let Some(footer) = &rendered.footer {
+        let mut footer_builder = EmbedFooterBuilder::new(&footer.text);
+        if let Some(icon_url) = &footer.icon_url {
+            footer_builder = footer_builder.icon_url(
+                ImageSource::url(icon_url)
+                    .map_err(|error| format!("invalid footer icon URL: {error}"))?,
+            );
+        }
+        builder = builder.footer(footer_builder);
+    }
+    if let Some(thumbnail_url) = &rendered.thumbnail_url {
+        builder = builder.thumbnail(
+            ImageSource::url(thumbnail_url)
+                .map_err(|error| format!("invalid thumbnail URL: {error}"))?,
+        );
+    }
+    if let Some(image_url) = &rendered.image_url {
+        builder = builder.image(
+            ImageSource::url(image_url).map_err(|error| format!("invalid image URL: {error}"))?,
+        );
+    }
+    for field in &rendered.fields {
+        let mut field_builder = EmbedFieldBuilder::new(&field.name, &field.value);
+        if field.inline {
+            field_builder = field_builder.inline();
+        }
+        builder = builder.field(field_builder);
+    }
+    if rendered.timestamp
+        && let Ok(now) = Timestamp::from_secs(OffsetDateTime::now_utc().unix_timestamp())
+    {
+        builder = builder.timestamp(now);
+    }
+    builder
+        .validate()
+        .map_err(|error| format!("invalid embed: {error}"))
+        .map(EmbedBuilder::build)
+}
+
+fn component_emoji(emoji: &EmojiRef) -> Result<EmojiReactionType, String> {
+    Ok(match emoji {
+        EmojiRef::Unicode(name) => EmojiReactionType::Unicode { name: name.clone() },
+        EmojiRef::Custom { name, id, animated } => EmojiReactionType::Custom {
+            animated: *animated,
+            id: Id::new_checked(*id).ok_or("invalid emoji ID")?,
+            name: Some(name.clone()),
+        },
+    })
+}
+
+fn build_component_row(row: &RenderedComponentRow) -> Result<Component, String> {
+    let components = match row {
+        RenderedComponentRow::Buttons(buttons) => buttons
+            .iter()
+            .map(|button| {
+                Ok(Component::Button(match button {
+                    RenderedButton::Action {
+                        id,
+                        label,
+                        emoji,
+                        style,
+                        disabled,
+                    } => Button {
+                        id: None,
+                        custom_id: Some(id.clone()),
+                        disabled: *disabled,
+                        emoji: emoji.as_ref().map(component_emoji).transpose()?,
+                        label: label.clone(),
+                        sku_id: None,
+                        style: match style {
+                            ButtonStyle::Primary => TwilightButtonStyle::Primary,
+                            ButtonStyle::Secondary => TwilightButtonStyle::Secondary,
+                            ButtonStyle::Success => TwilightButtonStyle::Success,
+                            ButtonStyle::Danger => TwilightButtonStyle::Danger,
+                        },
+                        url: None,
+                    },
+                    RenderedButton::Link {
+                        url,
+                        label,
+                        emoji,
+                        disabled,
+                    } => Button {
+                        id: None,
+                        custom_id: None,
+                        disabled: *disabled,
+                        emoji: emoji.as_ref().map(component_emoji).transpose()?,
+                        label: label.clone(),
+                        sku_id: None,
+                        style: TwilightButtonStyle::Link,
+                        url: Some(url.clone()),
+                    },
+                }))
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        RenderedComponentRow::SelectMenu {
+            id,
+            placeholder,
+            min_values,
+            max_values,
+            disabled,
+            options,
+        } => vec![Component::SelectMenu(SelectMenu {
+            channel_types: None,
+            custom_id: id.clone(),
+            default_values: None,
+            disabled: *disabled,
+            id: None,
+            kind: SelectMenuType::Text,
+            max_values: Some(*max_values),
+            min_values: Some(*min_values),
+            options: Some(
+                options
+                    .iter()
+                    .map(|option| {
+                        Ok(SelectMenuOption {
+                            default: option.default,
+                            description: option.description.clone(),
+                            emoji: option.emoji.as_ref().map(component_emoji).transpose()?,
+                            label: option.label.clone(),
+                            value: option.value.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?,
+            ),
+            placeholder: placeholder.clone(),
+            required: None,
+        })],
+    };
+    Ok(Component::ActionRow(ActionRow {
+        id: None,
+        components,
+    }))
 }
 
 /// Where `Reply` effects go.
@@ -403,6 +754,10 @@ enum Reply<'a> {
 struct InteractionReply<'a> {
     id: Id<InteractionMarker>,
     token: &'a str,
+    is_component: bool,
+    source_message: Option<(Id<ChannelMarker>, Id<MessageMarker>)>,
+    /// Whether `@original` points to the clicked message rather than a reply.
+    original_is_source: bool,
     state: ReplyState,
 }
 
@@ -411,31 +766,68 @@ enum ReplyState {
     /// Nothing sent yet: Discord expects an answer within 3 seconds.
     Pending,
     /// "Thinking…" was sent; the first reply edits it.
-    Deferred,
-    /// The first reply was sent; later replies are follow-ups.
+    DeferredMessage,
+    /// Silent component ACK was sent; the first update edits the clicked message.
+    DeferredUpdate,
+    /// An initial response was sent; later replies are follow-ups.
     Sent,
 }
 
 impl Reply<'_> {
     /// Interactions must be answered within 3 seconds. When the first effect
-    /// is not a reply, acknowledge right away and edit the answer later.
+    /// is not an immediate reply or update, acknowledge right away.
     async fn prepare(&mut self, bot: &BotContext, effects: &[Effect]) {
         let Self::Interaction(interaction) = self else {
             return;
         };
-        if matches!(effects.first(), Some(Effect::Reply { .. })) {
+        if matches!(
+            effects.first(),
+            Some(Effect::Reply { .. } | Effect::UpdateMessage { .. })
+        ) {
             return;
         }
-        let ephemeral = effects.iter().find_map(|effect| match effect {
-            Effect::Reply { ephemeral, .. } => Some(*ephemeral),
-            _ => None,
-        });
-        let response = InteractionResponse {
-            kind: InteractionResponseType::DeferredChannelMessageWithSource,
-            data: Some(InteractionResponseData {
-                flags: Some(flags(ephemeral.unwrap_or(true))),
-                ..InteractionResponseData::default()
-            }),
+        let first_response = effects
+            .iter()
+            .find(|effect| matches!(effect, Effect::Reply { .. } | Effect::UpdateMessage { .. }));
+        let (response, next_state, original_is_source) = match first_response {
+            Some(Effect::UpdateMessage { .. }) => (
+                InteractionResponse {
+                    kind: InteractionResponseType::DeferredUpdateMessage,
+                    data: None,
+                },
+                ReplyState::DeferredUpdate,
+                true,
+            ),
+            Some(Effect::Reply { ephemeral, .. }) => (
+                InteractionResponse {
+                    kind: InteractionResponseType::DeferredChannelMessageWithSource,
+                    data: Some(InteractionResponseData {
+                        flags: Some(flags(*ephemeral)),
+                        ..InteractionResponseData::default()
+                    }),
+                },
+                ReplyState::DeferredMessage,
+                false,
+            ),
+            _ if interaction.is_component => (
+                InteractionResponse {
+                    kind: InteractionResponseType::DeferredUpdateMessage,
+                    data: None,
+                },
+                ReplyState::DeferredUpdate,
+                true,
+            ),
+            _ => (
+                InteractionResponse {
+                    kind: InteractionResponseType::DeferredChannelMessageWithSource,
+                    data: Some(InteractionResponseData {
+                        flags: Some(MessageFlags::EPHEMERAL),
+                        ..InteractionResponseData::default()
+                    }),
+                },
+                ReplyState::DeferredMessage,
+                false,
+            ),
         };
         match bot
             .http
@@ -443,7 +835,10 @@ impl Reply<'_> {
             .create_response(interaction.id, interaction.token, &response)
             .await
         {
-            Ok(_) => interaction.state = ReplyState::Deferred,
+            Ok(_) => {
+                interaction.state = next_state;
+                interaction.original_is_source = original_is_source;
+            }
             Err(error) => tracing::warn!(bot = %bot.id, %error, "failed to defer interaction"),
         }
     }
@@ -451,34 +846,61 @@ impl Reply<'_> {
     async fn send(
         &mut self,
         bot: &BotContext,
-        content: &str,
+        payload: &MessagePayload,
         ephemeral: bool,
     ) -> Result<(), String> {
+        let (embeds, components) = build_rich(payload)?;
         match self {
             Self::Interaction(interaction) => {
                 let client = bot.http.interaction(bot.application_id);
                 let result = match interaction.state {
                     ReplyState::Pending => {
-                        let response = ChannelMessageBuilder::new()
-                            .content(content)
-                            .flags(flags(ephemeral))
-                            .build();
+                        let mut builder = ChannelMessageBuilder::new()
+                            .allowed_mentions(allowed_mentions())
+                            .flags(flags(ephemeral));
+                        if let Some(content) = payload.content.as_deref() {
+                            builder = builder.content(content);
+                        }
+                        if !embeds.is_empty() {
+                            builder = builder.embeds(embeds);
+                        }
+                        if !components.is_empty() {
+                            builder = builder.components(components);
+                        }
+                        let response = builder.build();
+                        interaction.original_is_source = false;
                         client
                             .create_response(interaction.id, interaction.token, &response)
                             .await
                             .map(drop)
                     }
-                    ReplyState::Deferred => client
-                        .update_response(interaction.token)
-                        .content(Some(content))
-                        .await
-                        .map(drop),
-                    ReplyState::Sent => client
-                        .create_followup(interaction.token)
-                        .content(content)
-                        .flags(flags(ephemeral))
-                        .await
-                        .map(drop),
+                    ReplyState::DeferredMessage => {
+                        let mut req = client
+                            .update_response(interaction.token)
+                            .content(payload.content.as_deref());
+                        if !embeds.is_empty() {
+                            req = req.embeds(Some(&embeds));
+                        }
+                        if !components.is_empty() {
+                            req = req.components(Some(&components));
+                        }
+                        req.await.map(drop)
+                    }
+                    ReplyState::DeferredUpdate | ReplyState::Sent => {
+                        let mut req = client
+                            .create_followup(interaction.token)
+                            .flags(flags(ephemeral));
+                        if let Some(content) = payload.content.as_deref() {
+                            req = req.content(content);
+                        }
+                        if !embeds.is_empty() {
+                            req = req.embeds(&embeds);
+                        }
+                        if !components.is_empty() {
+                            req = req.components(&components);
+                        }
+                        req.await.map(drop)
+                    }
                 };
                 interaction.state = ReplyState::Sent;
                 result.map_err(|error| describe(&error, "reply"))
@@ -486,20 +908,94 @@ impl Reply<'_> {
             Self::Message {
                 channel_id,
                 message_id,
-            } => bot
-                .http
-                .create_message(*channel_id)
-                .content(content)
-                .reply(*message_id)
-                .fail_if_not_exists(false)
-                .await
-                .map(drop)
-                .map_err(|error| describe(&error, "reply")),
+            } => {
+                let mut req = bot
+                    .http
+                    .create_message(*channel_id)
+                    .reply(*message_id)
+                    .fail_if_not_exists(false);
+                if let Some(content) = payload.content.as_deref() {
+                    req = req.content(content);
+                }
+                if !embeds.is_empty() {
+                    req = req.embeds(&embeds);
+                }
+                if !components.is_empty() {
+                    req = req.components(&components);
+                }
+                req.await
+                    .map(drop)
+                    .map_err(|error| describe(&error, "reply"))
+            }
             Self::Unavailable => Err("there is no message to reply to".to_owned()),
         }
     }
 
-    /// Make sure the person who used a slash command always gets an answer.
+    async fn update(&mut self, bot: &BotContext, payload: &MessagePayload) -> Result<(), String> {
+        let Self::Interaction(interaction) = self else {
+            return Err(
+                "only button and select menu triggers can update the clicked message".to_owned(),
+            );
+        };
+        if !interaction.is_component {
+            return Err(
+                "only button and select menu triggers can update the clicked message".to_owned(),
+            );
+        }
+        let (embeds, components) = build_rich(payload)?;
+        let keep_body = payload.content.is_none() && embeds.is_empty();
+        let client = bot.http.interaction(bot.application_id);
+
+        let result = match (interaction.state, interaction.original_is_source) {
+            (ReplyState::Pending, _) => {
+                let mut builder = UpdateMessageBuilder::new()
+                    .allowed_mentions(allowed_mentions())
+                    .components(components);
+                if !keep_body {
+                    builder = builder
+                        .content(payload.content.as_deref().unwrap_or(""))
+                        .embeds(embeds);
+                }
+                let response = builder.build();
+                interaction.original_is_source = true;
+                interaction.state = ReplyState::Sent;
+                client
+                    .create_response(interaction.id, interaction.token, &response)
+                    .await
+                    .map(drop)
+            }
+            (ReplyState::DeferredUpdate, _) | (ReplyState::Sent, true) => {
+                interaction.state = ReplyState::Sent;
+                let mut req = client
+                    .update_response(interaction.token)
+                    .components(Some(&components));
+                if !keep_body {
+                    req = req
+                        .content(payload.content.as_deref())
+                        .embeds(Some(&embeds));
+                }
+                req.await.map(drop)
+            }
+            (ReplyState::DeferredMessage, _) | (ReplyState::Sent, false) => {
+                let Some((channel_id, message_id)) = interaction.source_message else {
+                    return Err("there is no message to update".to_owned());
+                };
+                let mut req = bot
+                    .http
+                    .update_message(channel_id, message_id)
+                    .components(Some(&components));
+                if !keep_body {
+                    req = req
+                        .content(payload.content.as_deref())
+                        .embeds(Some(&embeds));
+                }
+                req.await.map(drop)
+            }
+        };
+        result.map_err(|error| describe(&error, "update the message"))
+    }
+
+    /// Make sure every interaction is answered, and report errors ephemerally.
     async fn finish(&mut self, bot: &BotContext, notice: Option<&str>) {
         let Self::Interaction(interaction) = self else {
             return;
@@ -507,6 +1003,9 @@ impl Reply<'_> {
         let content = match notice {
             Some(notice) => notice,
             None if interaction.state == ReplyState::Sent => return,
+            None if interaction.is_component && interaction.state == ReplyState::DeferredUpdate => {
+                return;
+            }
             None => "✅ Done.",
         };
         let client = bot.http.interaction(bot.application_id);
@@ -521,12 +1020,12 @@ impl Reply<'_> {
                     .await
                     .map(drop)
             }
-            ReplyState::Deferred => client
+            ReplyState::DeferredMessage => client
                 .update_response(interaction.token)
                 .content(Some(content))
                 .await
                 .map(drop),
-            ReplyState::Sent => client
+            ReplyState::DeferredUpdate | ReplyState::Sent => client
                 .create_followup(interaction.token)
                 .content(content)
                 .flags(MessageFlags::EPHEMERAL)
@@ -564,7 +1063,98 @@ fn describe(error: &twilight_http::Error, action: &str) -> String {
         10_011 => "this role does not exist anymore",
         10_014 => "this emoji is unknown to the bot",
         10_008 => "the message was deleted",
+        10_007 => "this member is no longer in the server",
+        10_013 => "this user does not exist anymore",
+        50_007 => "this user does not accept direct messages from the bot",
         _ => return format!("could not {action}: {} (code {})", api.message, api.code),
     };
     format!("could not {action}: {hint}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use disblock_program::{
+        RenderedEmbedAuthor, RenderedEmbedField, RenderedEmbedFooter, RenderedSelectOption,
+    };
+    use twilight_http::request::TryIntoRequest as _;
+
+    #[tokio::test]
+    async fn builds_valid_discord_embeds_and_components() {
+        let payload = MessagePayload {
+            content: Some("Hello!".to_owned()),
+            embeds: vec![RenderedEmbed {
+                title: Some("Welcome".to_owned()),
+                url: Some("https://example.com".to_owned()),
+                description: Some("Pick a role below.".to_owned()),
+                color: Some(0x0058_65F2),
+                author: Some(RenderedEmbedAuthor {
+                    name: "Bot".to_owned(),
+                    url: Some("https://example.com".to_owned()),
+                    icon_url: Some("https://example.com/a.png".to_owned()),
+                }),
+                footer: Some(RenderedEmbedFooter {
+                    text: "Footer".to_owned(),
+                    icon_url: Some("https://example.com/f.png".to_owned()),
+                }),
+                thumbnail_url: Some("https://example.com/t.png".to_owned()),
+                image_url: Some("https://example.com/i.png".to_owned()),
+                fields: vec![RenderedEmbedField {
+                    name: "Members".to_owned(),
+                    value: "42".to_owned(),
+                    inline: true,
+                }],
+                timestamp: true,
+            }],
+            components: vec![
+                RenderedComponentRow::Buttons(vec![
+                    RenderedButton::Action {
+                        id: "verify".to_owned(),
+                        label: Some("Verify".to_owned()),
+                        emoji: Some(EmojiRef::Unicode("✅".to_owned())),
+                        style: ButtonStyle::Success,
+                        disabled: false,
+                    },
+                    RenderedButton::Link {
+                        url: "https://example.com".to_owned(),
+                        label: Some("Docs".to_owned()),
+                        emoji: None,
+                        disabled: false,
+                    },
+                ]),
+                RenderedComponentRow::SelectMenu {
+                    id: "role".to_owned(),
+                    placeholder: Some("Choose...".to_owned()),
+                    min_values: 1,
+                    max_values: 1,
+                    disabled: false,
+                    options: vec![RenderedSelectOption {
+                        label: "Updates".to_owned(),
+                        value: "updates".to_owned(),
+                        description: Some("Get pinged".to_owned()),
+                        emoji: Some(EmojiRef::Custom {
+                            name: "bell".to_owned(),
+                            id: 123_456_789_012_345_678,
+                            animated: true,
+                        }),
+                        default: false,
+                    }],
+                },
+            ],
+        };
+
+        let (embeds, components) = build_rich(&payload).expect("valid rich payload");
+        assert_eq!(embeds.len(), 1);
+        assert!(embeds[0].timestamp.is_some());
+        assert_eq!(components.len(), 2);
+
+        let client = twilight_http::Client::new(String::new());
+        client
+            .create_message(Id::new(1))
+            .content("Hello!")
+            .embeds(&embeds)
+            .components(&components)
+            .try_into_request()
+            .expect("twilight accepts built embeds and components");
+    }
 }

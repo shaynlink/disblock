@@ -1,6 +1,7 @@
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use disblock_program::ErrorLocation;
 use serde_json::json;
 use thiserror::Error;
 
@@ -14,6 +15,11 @@ pub enum ApiError {
     NotFound,
     #[error("{0}")]
     BadRequest(String),
+    #[error("{message}")]
+    ProgramError {
+        message: String,
+        location: Box<ErrorLocation>,
+    },
     #[error("{0}")]
     Conflict(String),
     #[error("Discord did not answer, try again in a moment")]
@@ -29,7 +35,7 @@ impl ApiError {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::ProgramError { .. } => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Discord(_) => StatusCode::BAD_GATEWAY,
             Self::Database(_) | Self::Crypto(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -45,6 +51,13 @@ impl IntoResponse for ApiError {
             Self::Discord(error) => tracing::warn!(%error, "discord error"),
             _ => {}
         }
-        (self.status(), Json(json!({ "error": self.to_string() }))).into_response()
+        let body = match &self {
+            Self::ProgramError { message, location } => json!({
+                "error": message,
+                "location": location,
+            }),
+            _ => json!({ "error": self.to_string() }),
+        };
+        (self.status(), Json(body)).into_response()
     }
 }
