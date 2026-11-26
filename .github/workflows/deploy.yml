@@ -57,6 +57,9 @@ jobs:
         run: |
           curl --fail --show-error --silent --retry 6 --retry-all-errors \
             --retry-delay 5 "${HEALTH_URL%/}/api/health"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.5.2
       - uses: actions/setup-node@v5
         with:
           node-version: 26
@@ -65,7 +68,6 @@ jobs:
       - name: Deploy web worker
         working-directory: web
         run: |
-          corepack enable
           pnpm install --frozen-lockfile
           pnpm run build
           config=wrangler.staging.jsonc

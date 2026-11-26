@@ -71,8 +71,8 @@ async fn plan(
         }
         _ => {
             let executions = program.handle(event, &SavedVariables::default(), &mut ThreadRandom);
-            let count = i32::try_from(executions.len())
-                .map_err(|_| "too many executions".to_owned())?;
+            let count =
+                i32::try_from(executions.len()).map_err(|_| "too many executions".to_owned())?;
             if super::quota::reserve_many(&bot.db, bot.id, count)
                 .await
                 .map_err(|error| {

@@ -22,7 +22,9 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use twilight_gateway::queue::InMemoryQueue;
-use twilight_gateway::{CloseFrame, ConfigBuilder, EventTypeFlags, Intents, Session, Shard, StreamExt as _};
+use twilight_gateway::{
+    CloseFrame, ConfigBuilder, EventTypeFlags, Intents, Session, Shard, StreamExt as _,
+};
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
 use twilight_model::channel::message::{AllowedMentions, MentionType};
@@ -271,20 +273,7 @@ impl Runtime {
             .ok()
             .and_then(Id::new_checked)
             .ok_or_else(|| RuntimeError::Discord("stored application id is invalid".to_owned()))?;
-        let mut program = row.program.0;
-        // A customer can cancel or lose payment while a bot is running. Keep the
-        // saved workspace intact, but never load paid scheduled work without a
-        // current Pro entitlement.
-        if program
-            .handlers
-            .iter()
-            .any(|handler| matches!(handler.trigger, disblock_program::Trigger::Schedule { .. }))
-            && !has_pro_access(&self.inner.db, id).await?
-        {
-            program.handlers.retain(|handler| {
-                !matches!(handler.trigger, disblock_program::Trigger::Schedule { .. })
-            });
-        }
+        let program = row.program.0;
 
         Ok(Loaded {
             application_id,
@@ -352,15 +341,6 @@ impl Runtime {
             tracing::error!(bot = %id, %error, "failed to save bot status");
         }
     }
-}
-
-async fn has_pro_access(db: &PgPool, bot_id: Uuid) -> Result<bool, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM bot_subscriptions WHERE bot_id = $1 AND status IN ('active', 'trialing'))",
-    )
-    .bind(bot_id)
-    .fetch_one(db)
-    .await
 }
 
 /// Whether Discord refused the bot token, either now (401) or earlier in the
