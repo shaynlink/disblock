@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::CurrentUser;
+use crate::billing;
 use crate::error::ApiError;
 use crate::runtime::{BotIntents, RuntimeError, bot_client, is_unauthorized};
 
@@ -290,6 +291,8 @@ async fn save_program(
     if owned.is_none() {
         return Err(ApiError::NotFound);
     }
+
+    billing::check_program_limits(&state.db, id, &body.program).await?;
 
     let needs = compiled.gateway_needs();
     if needs.members || needs.messages {

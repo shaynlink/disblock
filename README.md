@@ -86,7 +86,10 @@ fly secrets set \
   PUBLIC_URL='https://your-domain' \
   DISCORD_CLIENT_ID='…' \
   DISCORD_CLIENT_SECRET='…' \
-  ENCRYPTION_KEY="$(openssl rand -base64 32)"
+  ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  STRIPE_SECRET_KEY='sk_live_…' \
+  STRIPE_WEBHOOK_SECRET='whsec_…' \
+  STRIPE_PRO_PRICE_ID='price_…'
 fly deploy
 fly scale count 1
 ```
@@ -94,7 +97,21 @@ fly scale count 1
 Keep `ENCRYPTION_KEY` somewhere safe: losing it makes every stored bot token
 unreadable.
 
-### 3. Cloudflare
+### 3. Stripe Billing
+
+Create a recurring Pro Price in Stripe and set `STRIPE_PRO_PRICE_ID` to its
+`price_…` id. Configure a Stripe webhook endpoint at
+`https://your-domain/api/stripe/webhook` and give it the
+`checkout.session.completed`, `customer.subscription.created`,
+`customer.subscription.updated`, and `customer.subscription.deleted` events.
+Store its signing secret as `STRIPE_WEBHOOK_SECRET`.
+
+The API creates hosted subscription Checkout sessions and Customer Portal
+sessions; it never exposes Stripe secret keys to the browser. Pro access is
+only granted from signed, idempotently-recorded subscription webhooks. Leaving
+the three Stripe variables unset keeps billing disabled for local development.
+
+### 4. Cloudflare
 
 Set `API_ORIGIN` in `web/wrangler.jsonc` to the Fly app URL, then:
 

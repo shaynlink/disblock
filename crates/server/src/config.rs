@@ -15,7 +15,6 @@ pub enum ConfigError {
     },
 }
 
-#[derive(Debug)]
 pub struct Config {
     pub database_url: String,
     /// Origin the app is served from, without trailing slash.
@@ -23,7 +22,16 @@ pub struct Config {
     pub discord_client_id: String,
     pub discord_client_secret: String,
     pub encryption_key: [u8; 32],
+    /// Stripe is optional locally, but its three values must be configured as a set.
+    pub stripe: Option<StripeConfig>,
     pub port: u16,
+}
+
+/// Server-only Stripe credentials and the recurring Pro Price to sell.
+pub struct StripeConfig {
+    pub secret_key: String,
+    pub webhook_secret: String,
+    pub pro_price_id: String,
 }
 
 impl Config {
@@ -53,12 +61,15 @@ impl Config {
             Err(_) => 8080,
         };
 
+        let stripe = stripe_from_env()?;
+
         Ok(Self {
             database_url: required("DATABASE_URL")?,
             public_url,
             discord_client_id: required("DISCORD_CLIENT_ID")?,
             discord_client_secret: required("DISCORD_CLIENT_SECRET")?,
             encryption_key,
+            stripe,
             port,
         })
     }
@@ -70,6 +81,31 @@ impl Config {
 
     pub fn oauth_redirect_uri(&self) -> String {
         format!("{}/api/auth/callback", self.public_url)
+    }
+}
+
+fn stripe_from_env() -> Result<Option<StripeConfig>, ConfigError> {
+    let secret_key = env::var("STRIPE_SECRET_KEY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let webhook_secret = env::var("STRIPE_WEBHOOK_SECRET")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let pro_price_id = env::var("STRIPE_PRO_PRICE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    match (secret_key, webhook_secret, pro_price_id) {
+        (None, None, None) => Ok(None),
+        (Some(secret_key), Some(webhook_secret), Some(pro_price_id)) => Ok(Some(StripeConfig {
+            secret_key,
+            webhook_secret,
+            pro_price_id,
+        })),
+        _ => Err(ConfigError::Invalid {
+            name: "STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRO_PRICE_ID",
+            reason: "must be set together",
+        }),
     }
 }
 

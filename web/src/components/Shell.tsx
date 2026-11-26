@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Blocks,
   Bot,
+  CreditCard,
   History,
   LayoutDashboard,
   LogOut,
@@ -34,6 +35,7 @@ function Sidebar({ user }: { user: User }) {
         { to: `/bots/${botId}`, label: "Overview", icon: <LayoutDashboard />, end: true },
         { to: `/bots/${botId}/blocks`, label: "Blocks", icon: <Blocks /> },
         { to: `/bots/${botId}/activity`, label: "Activity", icon: <History /> },
+        { to: `/bots/${botId}/billing`, label: "Billing", icon: <CreditCard /> },
         { to: `/bots/${botId}/settings`, label: "Settings", icon: <Settings /> },
       ]
     : [{ to: "/", label: "Bots", icon: <Bot />, end: true }];

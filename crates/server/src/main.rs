@@ -1,4 +1,5 @@
 mod auth;
+mod billing;
 mod bots;
 mod config;
 mod crypto;
@@ -99,6 +100,7 @@ async fn run() -> Result<(), StartupError> {
     };
     let api = Router::new()
         .merge(auth::routes())
+        .merge(billing::routes())
         .merge(bots::routes())
         .route("/health", routing::get(|| async { "ok" }));
     let app = Router::new()
