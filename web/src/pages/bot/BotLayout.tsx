@@ -77,6 +77,12 @@ export function BotLayout() {
     setLoaded((current) => current && { ...current, workspace, program });
   }, []);
 
+  useEffect(() => {
+    if (bot) {
+      document.title = `${bot.name} — Disblock`;
+    }
+  }, [bot]);
+
   if (!detail || !bot) {
     return error ? (
       <p className="text-sm text-destructive">{error}</p>

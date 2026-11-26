@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -13,21 +13,10 @@ import { Link, NavLink, Outlet, useMatch } from "react-router";
 import { avatarUrl } from "../api.ts";
 import { cn } from "../lib/styles.ts";
 import type { User } from "../types.ts";
+import { Logo } from "./Logo.tsx";
 import { Button } from "./ui.tsx";
 
-export function Logo() {
-  return (
-    <span className="flex items-center gap-3">
-      <span className="flex size-10 items-center justify-center rounded-lg bg-primary">
-        <Blocks className="size-5 text-primary-foreground" />
-      </span>
-      <span className="text-left">
-        <span className="block text-xl leading-tight font-bold">Disblock</span>
-        <span className="block text-xs text-muted-foreground">Visual Bot Builder</span>
-      </span>
-    </span>
-  );
-}
+export { Logo };
 
 interface NavItem {
   to: string;
@@ -102,6 +91,15 @@ function Sidebar({ user }: { user: User }) {
 }
 
 export function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const isBotRoute = Boolean(useMatch("/bots/:id/*"));
+
+  useEffect(() => {
+    document.documentElement.lang = "en";
+    if (!isBotRoute) {
+      document.title = "Your bots — Disblock";
+    }
+  }, [isBotRoute]);
+
   return (
     <div className="flex min-h-screen flex-col gap-2.5 p-2.5 md:h-screen">
       <header className="sticky top-0 z-40 rounded-xl border bg-white">
