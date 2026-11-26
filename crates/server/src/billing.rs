@@ -242,28 +242,15 @@ async fn ensure_owned(db: &PgPool, bot_id: Uuid, user_id: Uuid) -> Result<(), Ap
     }
 }
 
-/// Reject paid program capabilities at the API boundary, not only in the UI.
+/// Reserve the API boundary for paid program capabilities. The current stable
+/// program schema has no paid-only trigger; execution quotas are enforced by
+/// the runtime for every plan.
 pub async fn check_program_limits(
-    db: &PgPool,
-    bot_id: Uuid,
-    program: &disblock_program::Program,
+    _db: &PgPool,
+    _bot_id: Uuid,
+    _program: &disblock_program::Program,
 ) -> Result<(), ApiError> {
-    let Some(handler) = program
-        .handlers
-        .iter()
-        .position(|handler| matches!(handler.trigger, disblock_program::Trigger::Schedule { .. }))
-    else {
-        return Ok(());
-    };
-    if has_pro_access(db, bot_id).await? {
-        return Ok(());
-    }
-    Err(ApiError::ProgramError {
-        message:
-            "Scheduled tasks require Pro for this bot. Upgrade it from Billing, then save again."
-                .to_owned(),
-        location: Box::new(disblock_program::ErrorLocation::handler(handler)),
-    })
+    Ok(())
 }
 
 async fn has_pro_access(db: &PgPool, bot_id: Uuid) -> Result<bool, sqlx::Error> {

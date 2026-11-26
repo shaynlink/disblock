@@ -26,7 +26,6 @@ jobs:
           - 5432:5432
     env:
       DATABASE_URL: postgres://disblock:disblock@localhost:5432/disblock
-      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -37,6 +36,9 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo build --release --locked -p disblock-server
+        env:
+          # Production images compile offline from the checked-in .sqlx cache.
+          SQLX_OFFLINE: "true"
 
   web:
     name: Web application
