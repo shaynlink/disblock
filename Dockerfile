@@ -14,6 +14,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /usr/local/bin/disblock-server /disblock-server
+ARG RELEASE_VERSION=unknown
+ENV RELEASE_VERSION=$RELEASE_VERSION
 ENV PORT=8080
 EXPOSE 8080
 ENTRYPOINT ["/disblock-server"]

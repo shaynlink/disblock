@@ -1,0 +1,66 @@
+name: Database backup
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    env:
+      BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+      BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+      BACKUP_S3_URI: ${{ vars.BACKUP_S3_URI }}
+      BACKUP_KMS_KEY_ID: ${{ secrets.BACKUP_KMS_KEY_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_BACKUP_ROLE_ARN }}
+      OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Validate backup configuration
+        run: |
+          test -n "$BACKUP_DATABASE_URL"
+          test -n "$BACKUP_AGE_RECIPIENT"
+          test -n "$BACKUP_S3_URI"
+          test -n "$BACKUP_KMS_KEY_ID"
+          test -n "$AWS_REGION"
+          test -n "$AWS_ROLE_ARN"
+          case "$BACKUP_S3_URI" in s3://*) ;; *) exit 1 ;; esac
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_BACKUP_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Install PostgreSQL client and encryption tool
+        run: sudo apt-get update && sudo apt-get install --yes postgresql-client age
+      - name: Dump, encrypt and upload
+        run: |
+          stamp=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          dump="disblock-${stamp}.dump"
+          encrypted="${dump}.age"
+          pg_dump "$BACKUP_DATABASE_URL" --format=custom --no-owner --no-privileges --file "$dump"
+          age --recipient "$BACKUP_AGE_RECIPIENT" --output "$encrypted" "$dump"
+          sha256sum "$encrypted" > "${encrypted}.sha256"
+          aws s3 cp "$encrypted" "$BACKUP_S3_URI/$encrypted" \
+            --sse aws:kms --sse-kms-key-id "$BACKUP_KMS_KEY_ID"
+          aws s3 cp "${encrypted}.sha256" "$BACKUP_S3_URI/${encrypted}.sha256" \
+            --sse aws:kms --sse-kms-key-id "$BACKUP_KMS_KEY_ID"
+          rm -f "$dump" "$encrypted" "${encrypted}.sha256"
+      - name: Notify on backup failure
+        if: ${{ failure() && env.OPS_ALERT_WEBHOOK_URL != '' }}
+        env:
+          ALERT_WEBHOOK: ${{ env.OPS_ALERT_WEBHOOK_URL }}
+        run: |
+          message="Disblock database backup failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl --fail --show-error --silent --max-time 10 \
+            -H 'content-type: application/json' \
+            --data "$(jq -nc --arg text "$message" '{text: $text, content: $text}')" \
+            "$ALERT_WEBHOOK"

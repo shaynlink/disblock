@@ -1,0 +1,83 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        required: true
+        type: choice
+        options: [staging, production]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'staging' }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-24.04
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'staging' }}
+    env:
+      TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'staging' }}
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ vars.FLY_APP }}
+      HEALTH_URL: ${{ vars.HEALTH_URL }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_VERSION }}
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Validate deployment environment
+        run: |
+          test -n "$FLY_API_TOKEN"
+          test -n "$FLY_APP"
+          test -n "$HEALTH_URL"
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+      - name: Deploy API
+        run: |
+          config=fly.staging.toml
+          if [ "$TARGET" = production ]; then config=fly.toml; fi
+          flyctl deploy --remote-only --config "$config" --app "$FLY_APP" \
+            --build-arg RELEASE_VERSION="$RELEASE_VERSION"
+      - name: Verify API health
+        run: |
+          curl --fail --show-error --silent --retry 6 --retry-all-errors \
+            --retry-delay 5 "${HEALTH_URL%/}/api/health"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Deploy web worker
+        working-directory: web
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          config=wrangler.staging.jsonc
+          if [ "$TARGET" = production ]; then config=wrangler.jsonc; fi
+          pnpm exec wrangler deploy --config "$config"
+      - name: Notify on deployment failure
+        if: ${{ failure() && env.OPS_ALERT_WEBHOOK_URL != '' }}
+        env:
+          ALERT_WEBHOOK: ${{ env.OPS_ALERT_WEBHOOK_URL }}
+        run: |
+          message="Disblock ${TARGET} deployment failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl --fail --show-error --silent --max-time 10 \
+            -H 'content-type: application/json' \
+            --data "$(jq -nc --arg text "$message" '{text: $text, content: $text}')" \
+            "$ALERT_WEBHOOK"

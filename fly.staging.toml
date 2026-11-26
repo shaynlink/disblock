@@ -1,0 +1,32 @@
+# Isolated Fly app. Configure separate Fly, Neon, Discord, Stripe test-mode and
+# Sentry credentials; staging must never receive production secrets or bot tokens.
+app = "disblock-api-staging"
+primary_region = "cdg"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[env]
+  PORT = "8080"
+  RUST_LOG = "info"
+  SENTRY_ENVIRONMENT = "staging"
+
+[deploy]
+  strategy = "rolling"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "15s"
+    timeout = "5s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

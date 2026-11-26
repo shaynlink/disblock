@@ -1,0 +1,39 @@
+name: Production health alerts
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: staging
+            url: ${{ vars.STAGING_HEALTH_URL }}
+          - target: production
+            url: ${{ vars.PRODUCTION_HEALTH_URL }}
+    runs-on: ubuntu-24.04
+    env:
+      OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+    steps:
+      - name: Probe API
+        run: |
+          test -n "${{ matrix.url }}"
+          curl --fail --show-error --silent --retry 3 --retry-all-errors \
+            --retry-delay 5 "${{ matrix.url }}/api/health"
+      - name: Notify on unhealthy API
+        if: ${{ failure() && env.OPS_ALERT_WEBHOOK_URL != '' }}
+        env:
+          ALERT_WEBHOOK: ${{ env.OPS_ALERT_WEBHOOK_URL }}
+        run: |
+          message="Disblock ${{ matrix.target }} health check failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          curl --fail --show-error --silent --max-time 10 \
+            -H 'content-type: application/json' \
+            --data "$(jq -nc --arg text "$message" '{text: $text, content: $text}')" \
+            "$ALERT_WEBHOOK"

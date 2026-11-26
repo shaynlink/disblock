@@ -1,4 +1,5 @@
 use std::env;
+use std::str::FromStr;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -24,6 +25,8 @@ pub struct Config {
     pub encryption_key: [u8; 32],
     /// Stripe is optional locally, but its three values must be configured as a set.
     pub stripe: Option<StripeConfig>,
+    /// Error tracking is disabled until a DSN is explicitly configured.
+    pub sentry: Option<SentryConfig>,
     pub port: u16,
 }
 
@@ -32,6 +35,14 @@ pub struct StripeConfig {
     pub secret_key: String,
     pub webhook_secret: String,
     pub pro_price_id: String,
+}
+
+/// Sentry is intentionally opt-in so local development never exports telemetry.
+pub struct SentryConfig {
+    pub dsn: String,
+    pub environment: String,
+    pub release: Option<String>,
+    pub traces_sample_rate: f32,
 }
 
 impl Config {
@@ -62,6 +73,7 @@ impl Config {
         };
 
         let stripe = stripe_from_env()?;
+        let sentry = sentry_from_env()?;
 
         Ok(Self {
             database_url: required("DATABASE_URL")?,
@@ -70,6 +82,7 @@ impl Config {
             discord_client_secret: required("DISCORD_CLIENT_SECRET")?,
             encryption_key,
             stripe,
+            sentry,
             port,
         })
     }
@@ -82,6 +95,49 @@ impl Config {
     pub fn oauth_redirect_uri(&self) -> String {
         format!("{}/api/auth/callback", self.public_url)
     }
+}
+
+fn sentry_from_env() -> Result<Option<SentryConfig>, ConfigError> {
+    let Some(dsn) = env::var("SENTRY_DSN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+    sentry::types::Dsn::from_str(&dsn).map_err(|_| ConfigError::Invalid {
+        name: "SENTRY_DSN",
+        reason: "must be a valid Sentry DSN",
+    })?;
+
+    let traces_sample_rate = env::var("SENTRY_TRACES_SAMPLE_RATE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value.parse::<f32>().map_err(|_| ConfigError::Invalid {
+                name: "SENTRY_TRACES_SAMPLE_RATE",
+                reason: "must be a number between 0 and 1",
+            })
+        })
+        .transpose()?
+        .unwrap_or(0.1);
+    if !(0.0..=1.0).contains(&traces_sample_rate) {
+        return Err(ConfigError::Invalid {
+            name: "SENTRY_TRACES_SAMPLE_RATE",
+            reason: "must be a number between 0 and 1",
+        });
+    }
+
+    Ok(Some(SentryConfig {
+        dsn,
+        environment: env::var("SENTRY_ENVIRONMENT")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "development".to_owned()),
+        release: env::var("RELEASE_VERSION")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
+        traces_sample_rate,
+    }))
 }
 
 fn stripe_from_env() -> Result<Option<StripeConfig>, ConfigError> {

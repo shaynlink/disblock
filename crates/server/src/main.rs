@@ -4,6 +4,7 @@ mod bots;
 mod config;
 mod crypto;
 mod error;
+mod monitoring;
 mod runtime;
 
 use std::sync::Arc;
@@ -16,9 +17,8 @@ use sqlx::postgres::PgPoolOptions;
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::EnvFilter;
 
-use config::{Config, ConfigError};
+use config::Config;
 use crypto::TokenCipher;
 use runtime::Runtime;
 use runtime::log::ExecutionLog;
@@ -39,8 +39,6 @@ pub struct AppState {
 
 #[derive(Debug, Error)]
 enum StartupError {
-    #[error(transparent)]
-    Config(#[from] ConfigError),
     #[error("database: {0}")]
     Database(#[from] sqlx::Error),
     #[error("migrations: {0}")]
@@ -51,31 +49,36 @@ enum StartupError {
     Io(#[from] std::io::Error),
     #[error("runtime: {0}")]
     Runtime(#[from] runtime::RuntimeError),
-    #[error("a TLS crypto provider was already installed")]
-    Tls,
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .init();
+    let config = match Config::from_env() {
+        Ok(config) => Arc::new(config),
+        Err(error) => {
+            eprintln!("disblock configuration error: {error}");
+            std::process::exit(1);
+        }
+    };
+    // Install the explicit ring provider before creating any HTTP client,
+    // including Sentry's optional Rustls transport.
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_err()
+    {
+        eprintln!("disblock startup error: a TLS crypto provider was already installed");
+        std::process::exit(1);
+    }
+    let _sentry = monitoring::init(config.sentry.as_ref());
+    monitoring::init_tracing();
 
-    if let Err(error) = run().await {
+    if let Err(error) = run(config).await {
         tracing::error!(%error, "disblock stopped");
         std::process::exit(1);
     }
 }
 
-async fn run() -> Result<(), StartupError> {
-    // Every TLS client (Discord, Neon) uses the same ring-based provider.
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .map_err(|_| StartupError::Tls)?;
-
-    let config = Arc::new(Config::from_env()?);
+async fn run(config: Arc<Config>) -> Result<(), StartupError> {
     let db = PgPoolOptions::new()
         .max_connections(10)
         .acquire_timeout(Duration::from_secs(10))

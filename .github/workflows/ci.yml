@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    name: Rust server
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: disblock
+          POSTGRES_PASSWORD: disblock
+          POSTGRES_DB: disblock
+        options: >-
+          --health-cmd "pg_isready -U disblock -d disblock"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+        ports:
+          - 5432:5432
+    env:
+      DATABASE_URL: postgres://disblock:disblock@localhost:5432/disblock
+      SQLX_OFFLINE: "true"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo build --release --locked -p disblock-server
+
+  web:
+    name: Web application
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm run test
+      - run: pnpm run build
