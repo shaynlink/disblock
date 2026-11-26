@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ArrowRight, Blocks, Loader2 } from "lucide-react";
+import { ArrowRight, Blocks, LayoutTemplate, Loader2 } from "lucide-react";
 import { Link } from "react-router";
 import { ActivityList } from "../../components/ActivityList.tsx";
 import { useExecutions } from "../../useExecutions.ts";
@@ -53,28 +53,44 @@ export function OverviewPage() {
           title="Program"
           description="What your bot reacts to."
           action={
-            <Link to="blocks" className={buttonClass("default", "sm")}>
-              <Blocks />
-              Open the editor
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link to="blocks?templates=1" className={buttonClass("outline", "sm")}>
+                <LayoutTemplate />
+                Templates
+              </Link>
+              <Link to="blocks" className={buttonClass("default", "sm")}>
+                <Blocks />
+                Open the editor
+              </Link>
+            </div>
           }
         />
-        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <CardContent className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Field label="Slash commands">
             <span className="text-2xl font-bold">{count(triggers, "slash_command")}</span>
           </Field>
-          <Field label="Member joins">
-            <span className="text-2xl font-bold">{count(triggers, "member_join")}</span>
+          <Field label="Member events">
+            <span className="text-2xl font-bold">
+              {count(triggers, "member_join") + count(triggers, "member_leave")}
+            </span>
           </Field>
           <Field label="Message triggers">
             <span className="text-2xl font-bold">{count(triggers, "message_contains")}</span>
+          </Field>
+          <Field label="Reactions">
+            <span className="text-2xl font-bold">
+              {count(triggers, "reaction_add") + count(triggers, "reaction_remove")}
+            </span>
           </Field>
           <Field label="Click triggers">
             <span className="text-2xl font-bold">
               {count(triggers, "button_click") + count(triggers, "select_menu")}
             </span>
           </Field>
-          <div className="col-span-2 flex flex-wrap gap-2 sm:col-span-4">
+          <Field label="Scheduled tasks">
+            <span className="text-2xl font-bold">{count(triggers, "schedule")}</span>
+          </Field>
+          <div className="col-span-2 flex flex-wrap gap-2 sm:col-span-3">
             {triggers
               .filter((trigger) => trigger.type === "slash_command")
               .map((trigger) => (
@@ -96,6 +112,19 @@ export function OverviewPage() {
                   className="bg-secondary text-secondary-foreground"
                 >
                   {trigger.type === "button_click" ? "button" : "menu"}: {trigger.id}
+                </Badge>
+              ))}
+            {triggers
+              .filter(
+                (trigger): trigger is Extract<Trigger, { type: "schedule" }> =>
+                  trigger.type === "schedule",
+              )
+              .map((trigger, index) => (
+                <Badge
+                  key={`schedule:${index}:${trigger.interval}:${trigger.unit}`}
+                  className="bg-secondary text-secondary-foreground"
+                >
+                  every {trigger.interval} {trigger.unit}
                 </Badge>
               ))}
           </div>

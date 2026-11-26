@@ -16,6 +16,7 @@ import type {
   MathOp,
   OptionKind,
   Program,
+  ScheduleUnit,
   Scope,
   SelectOption,
   Statement,
@@ -81,6 +82,7 @@ export interface MissingIntent {
 }
 
 const OPTION_KINDS: readonly OptionKind[] = ["string", "integer", "boolean", "user"];
+const SCHEDULE_UNITS: readonly ScheduleUnit[] = ["minutes", "hours", "days"];
 const BUTTON_STYLES: readonly ButtonStyle[] = ["primary", "secondary", "success", "danger"];
 const SCOPES: readonly Scope[] = ["local", "member", "server"];
 const MATH_OPS: readonly MathOp[] = ["add", "subtract", "multiply", "divide", "modulo"];
@@ -96,6 +98,11 @@ const COMPARE_OPS: readonly CompareOp[] = [
 
 function text(block: Blockly.Block, field: string): string {
   return String(block.getFieldValue(field) ?? "");
+}
+
+function optionalText(block: Blockly.Block, field: string): string | undefined {
+  const value = text(block, field).trim();
+  return value ? value : undefined;
 }
 
 function num(block: Blockly.Block, field: string): number {
@@ -168,6 +175,8 @@ function readTriggerWithMap(
     }
     case "member_join":
       return { trigger: { type: "member_join" }, optionBlockIds: [] };
+    case "member_leave":
+      return { trigger: { type: "member_leave" }, optionBlockIds: [] };
     case "message_contains":
       return {
         trigger: {
@@ -177,6 +186,19 @@ function readTriggerWithMap(
         },
         optionBlockIds: [],
       };
+    case "reaction_add":
+    case "reaction_remove": {
+      const emoji = optionalText(block, "EMOJI");
+      const message_id = optionalText(block, "MESSAGE_ID");
+      return {
+        trigger: {
+          type: block.type,
+          ...(emoji !== undefined ? { emoji } : {}),
+          ...(message_id !== undefined ? { message_id } : {}),
+        },
+        optionBlockIds: [],
+      };
+    }
     case "button_click":
       return {
         trigger: {
@@ -190,6 +212,15 @@ function readTriggerWithMap(
         trigger: {
           type: "select_menu",
           id: text(block, "ID").trim(),
+        },
+        optionBlockIds: [],
+      };
+    case "schedule":
+      return {
+        trigger: {
+          type: "schedule",
+          interval: Math.trunc(num(block, "INTERVAL")),
+          unit: oneOf(block, "UNIT", SCHEDULE_UNITS),
         },
         optionBlockIds: [],
       };
@@ -828,7 +859,7 @@ export function findMissingIntents(
     if (!block.isEnabled()) {
       continue;
     }
-    if (block.type === "member_join" && !intents.members) {
+    if ((block.type === "member_join" || block.type === "member_leave") && !intents.members) {
       missing.push({
         intent: "members",
         label: "Server Members Intent",

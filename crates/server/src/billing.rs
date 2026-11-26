@@ -192,7 +192,7 @@ async fn webhook(
         .and_then(|value| value.to_str().ok())
         .ok_or_else(|| ApiError::BadRequest("invalid Stripe webhook signature".to_owned()))?;
     verify_webhook_signature(&stripe.webhook_secret, signature, &body)
-        .map_err(|_| ApiError::BadRequest("invalid Stripe webhook signature".to_owned()))?;
+        .map_err(|()| ApiError::BadRequest("invalid Stripe webhook signature".to_owned()))?;
     let event: StripeEvent = serde_json::from_slice(&body)
         .map_err(|_| ApiError::BadRequest("invalid Stripe webhook body".to_owned()))?;
 
@@ -242,18 +242,34 @@ async fn ensure_owned(db: &PgPool, bot_id: Uuid, user_id: Uuid) -> Result<(), Ap
     }
 }
 
-/// Reserve the API boundary for paid program capabilities. The current stable
-/// program schema has no paid-only trigger; execution quotas are enforced by
-/// the runtime for every plan.
+/// Free bots keep this many member and server variables at most.
+pub const FREE_SAVED_VARIABLES: usize = 5;
+
+/// Refuse programs that need Pro on a bot without an active subscription:
+/// scheduled triggers, or more than [`FREE_SAVED_VARIABLES`] saved variables.
 pub async fn check_program_limits(
-    _db: &PgPool,
-    _bot_id: Uuid,
-    _program: &disblock_program::Program,
+    db: &PgPool,
+    bot_id: Uuid,
+    program: &disblock_program::CompiledProgram,
 ) -> Result<(), ApiError> {
-    Ok(())
+    let scheduled = !program.schedules().is_empty();
+    let variables = program.saved_variable_count();
+    if !scheduled && variables <= FREE_SAVED_VARIABLES {
+        return Ok(());
+    }
+    if has_pro_access(db, bot_id).await? {
+        return Ok(());
+    }
+    Err(ApiError::BadRequest(if scheduled {
+        "scheduled triggers need Pro: upgrade this bot from its Settings page".to_owned()
+    } else {
+        format!(
+            "the free plan keeps up to {FREE_SAVED_VARIABLES} saved variables and this program uses {variables}: upgrade this bot to Pro"
+        )
+    }))
 }
 
-async fn has_pro_access(db: &PgPool, bot_id: Uuid) -> Result<bool, sqlx::Error> {
+pub(crate) async fn has_pro_access(db: &PgPool, bot_id: Uuid) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM bot_subscriptions WHERE bot_id = $1 AND status IN ('active', 'trialing'))",
     )
@@ -578,5 +594,77 @@ mod tests {
         assert!(is_pro_status("trialing"));
         assert!(!is_pro_status("past_due"));
         assert!(!is_pro_status("canceled"));
+    }
+}
+
+#[cfg(test)]
+mod plan_limit_tests {
+    use super::*;
+
+    async fn free_bot(db: &PgPool) -> Uuid {
+        let (owner, bot) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, discord_id, username) VALUES ($1, '1', 'owner')")
+            .bind(owner)
+            .execute(db)
+            .await
+            .expect("user");
+        sqlx::query(
+            "INSERT INTO bots (id, owner_id, application_id, name, token_nonce, token_ciphertext)
+             VALUES ($1, $2, '2', 'bot', '\\x00', '\\x00')",
+        )
+        .bind(bot)
+        .bind(owner)
+        .execute(db)
+        .await
+        .expect("bot");
+        bot
+    }
+
+    /// A program whose trigger changes `variables` distinct server variables,
+    /// or sends a message when there are none.
+    fn compiled(trigger: &str, variables: usize) -> disblock_program::CompiledProgram {
+        let actions: Vec<String> = if variables == 0 {
+            vec![
+                r#"{"type":"send_message","channel_id":"123456789012345678","content":"hi"}"#
+                    .to_owned(),
+            ]
+        } else {
+            (0..variables)
+                .map(|index| {
+                    format!(
+                        r#"{{"type":"change_variable","scope":"server","name":"v{index}","by":{{"type":"number","value":1}}}}"#
+                    )
+                })
+                .collect()
+        };
+        let json = format!(
+            r#"{{"handlers":[{{"trigger":{trigger},"actions":[{}]}}]}}"#,
+            actions.join(",")
+        );
+        serde_json::from_str::<disblock_program::Program>(&json)
+            .expect("valid json")
+            .compile()
+            .expect("valid program")
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn free_bots_keep_free_limits(db: PgPool) {
+        let bot = free_bot(&db).await;
+        let join = r#"{"type":"member_join"}"#;
+
+        assert!(
+            check_program_limits(&db, bot, &compiled(join, FREE_SAVED_VARIABLES))
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            check_program_limits(&db, bot, &compiled(join, FREE_SAVED_VARIABLES + 1)).await,
+            Err(ApiError::BadRequest(_))
+        ));
+        let hourly = r#"{"type":"schedule","interval":1,"unit":"hours"}"#;
+        assert!(matches!(
+            check_program_limits(&db, bot, &compiled(hourly, 0)).await,
+            Err(ApiError::BadRequest(_))
+        ));
     }
 }

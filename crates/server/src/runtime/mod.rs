@@ -9,9 +9,9 @@ mod sessions;
 mod variables;
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use disblock_program::{CompileError, CompiledProgram, GatewayNeeds, Program};
+use disblock_program::{CompileError, CompiledProgram, GatewayNeeds, Program, ScheduleSpec};
 use serde::Serialize;
 use sqlx::PgPool;
 use sqlx::types::Json;
@@ -30,7 +30,7 @@ use twilight_http::error::ErrorType;
 use twilight_model::channel::message::{AllowedMentions, MentionType};
 use twilight_model::gateway::event::Event;
 use twilight_model::id::Id;
-use twilight_model::id::marker::ApplicationMarker;
+use twilight_model::id::marker::{ApplicationMarker, UserMarker};
 use twilight_model::oauth::ApplicationFlags;
 use uuid::Uuid;
 
@@ -41,7 +41,10 @@ use log::ExecutionLog;
 const EVENTS: EventTypeFlags = EventTypeFlags::READY
     .union(EventTypeFlags::INTERACTION_CREATE)
     .union(EventTypeFlags::MEMBER_ADD)
-    .union(EventTypeFlags::MESSAGE_CREATE);
+    .union(EventTypeFlags::MEMBER_REMOVE)
+    .union(EventTypeFlags::MESSAGE_CREATE)
+    .union(EventTypeFlags::REACTION_ADD)
+    .union(EventTypeFlags::REACTION_REMOVE);
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -61,6 +64,7 @@ pub enum RuntimeError {
 pub struct BotContext {
     pub id: Uuid,
     pub application_id: Id<ApplicationMarker>,
+    pub bot_user_id: OnceLock<Id<UserMarker>>,
     pub http: Client,
     db: PgPool,
     log: ExecutionLog,
@@ -161,6 +165,7 @@ impl Runtime {
         let context = Arc::new(BotContext {
             id,
             application_id: loaded.application_id,
+            bot_user_id: OnceLock::new(),
             http,
             db: self.inner.db.clone(),
             log: self.inner.log.clone(),
@@ -273,7 +278,20 @@ impl Runtime {
             .ok()
             .and_then(Id::new_checked)
             .ok_or_else(|| RuntimeError::Discord("stored application id is invalid".to_owned()))?;
-        let program = row.program.0;
+        let mut program = row.program.0;
+        // A customer can cancel or lose payment while a bot is running. Keep the
+        // saved workspace intact, but never load paid scheduled work without a
+        // current Pro entitlement.
+        if program
+            .handlers
+            .iter()
+            .any(|handler| matches!(handler.trigger, disblock_program::Trigger::Schedule { .. }))
+            && !crate::billing::has_pro_access(&self.inner.db, id).await?
+        {
+            program.handlers.retain(|handler| {
+                !matches!(handler.trigger, disblock_program::Trigger::Schedule { .. })
+            });
+        }
 
         Ok(Loaded {
             application_id,
@@ -399,6 +417,9 @@ fn intents(needs: GatewayNeeds) -> Intents {
     if needs.messages {
         intents |= Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
     }
+    if needs.reactions {
+        intents |= Intents::GUILD_MESSAGE_REACTIONS;
+    }
     intents
 }
 
@@ -465,6 +486,8 @@ async fn run_bot(
         ));
     }
 
+    let scheduler = tokio::spawn(run_scheduler(bot.clone(), program, cancel.clone()));
+
     let mut failure = None;
     while let Some(result) = shard_tasks.join_next().await {
         let reason = match result {
@@ -477,9 +500,90 @@ async fn run_bot(
         }
     }
 
+    cancel.cancel();
+    let _ = scheduler.await;
+
     match failure {
         Some(reason) => runtime.set_status(bot.id, "error", Some(&reason)).await,
         None => runtime.set_status(bot.id, "stopped", None).await,
+    }
+}
+
+async fn run_scheduler(
+    bot: Arc<BotContext>,
+    mut program: watch::Receiver<Arc<CompiledProgram>>,
+    cancel: CancellationToken,
+) {
+    let mut timers: HashMap<ScheduleSpec, CancellationToken> = HashMap::new();
+    sync_schedule_timers(&bot, &program, &cancel, &mut timers);
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            changed = program.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                sync_schedule_timers(&bot, &program, &cancel, &mut timers);
+            }
+        }
+    }
+
+    for (_, token) in timers {
+        token.cancel();
+    }
+}
+
+fn sync_schedule_timers(
+    bot: &Arc<BotContext>,
+    program: &watch::Receiver<Arc<CompiledProgram>>,
+    parent_cancel: &CancellationToken,
+    timers: &mut HashMap<ScheduleSpec, CancellationToken>,
+) {
+    let wanted = program.borrow().schedules();
+    timers.retain(|spec, token| {
+        if wanted.contains(spec) {
+            true
+        } else {
+            token.cancel();
+            false
+        }
+    });
+    for spec in wanted {
+        timers.entry(spec).or_insert_with(|| {
+            let token = parent_cancel.child_token();
+            tokio::spawn(tick_schedule(
+                bot.clone(),
+                program.clone(),
+                spec,
+                token.clone(),
+            ));
+            token
+        });
+    }
+}
+
+async fn tick_schedule(
+    bot: Arc<BotContext>,
+    program: watch::Receiver<Arc<CompiledProgram>>,
+    spec: ScheduleSpec,
+    cancel: CancellationToken,
+) {
+    let period = Duration::from_secs(spec.seconds());
+    let mut interval = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => break,
+            _ = interval.tick() => {
+                let bot = bot.clone();
+                let current = program.borrow().clone();
+                tokio::spawn(async move {
+                    dispatch::on_schedule(&bot, &current, spec).await;
+                });
+            }
+        }
     }
 }
 
@@ -523,7 +627,8 @@ async fn run_shard(
                 }
 
                 match event {
-                    Event::Ready(_) => {
+                    Event::Ready(ready) => {
+                        let _ = bot.bot_user_id.set(ready.user.id);
                         tracing::info!(bot = %bot.id, shard = %shard.id(), "shard ready");
                         runtime.set_status(bot.id, "online", None).await;
                     }
@@ -547,9 +652,31 @@ fn close_reason(code: Option<u16>) -> String {
     match code {
         Some(4004) => "Discord rejected the bot token: it was probably reset. Add the bot again with its new token.".to_owned(),
         Some(4014) => "A privileged intent is disabled. In the Discord developer portal, open Bot and enable \
-                       \"Server Members Intent\" (member join) and \"Message Content Intent\" (message triggers)."
+                       \"Server Members Intent\" (member join/leave) and \"Message Content Intent\" (message triggers)."
             .to_owned(),
         Some(code) => format!("Discord closed the connection (code {code})."),
         None => "Discord closed the connection.".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_gateway_needs_to_intents() {
+        assert_eq!(intents(GatewayNeeds::default()), Intents::GUILDS);
+        assert_eq!(
+            intents(GatewayNeeds {
+                members: true,
+                messages: true,
+                reactions: true,
+            }),
+            Intents::GUILDS
+                | Intents::GUILD_MEMBERS
+                | Intents::GUILD_MESSAGES
+                | Intents::MESSAGE_CONTENT
+                | Intents::GUILD_MESSAGE_REACTIONS
+        );
     }
 }

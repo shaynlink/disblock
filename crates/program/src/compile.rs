@@ -1,11 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::model::{
-    ButtonSpec, ButtonStyle, CommandOption, CompareOp, ComponentRow, EmbedSpec, Expr, Handler,
-    MathOp, Program, Scope, SelectOptionSpec, Statement, Trigger,
+    ButtonSpec, ButtonStyle, CommandOption, CompareOp, ComponentRow, EmbedFieldSpec, EmbedSpec,
+    Expr, Handler, MathOp, Program, ScheduleUnit, Scope, SelectOptionSpec, Statement, Trigger,
 };
 use crate::run::EmojiRef;
 use crate::template::MAX_MESSAGE_LEN;
@@ -13,6 +13,7 @@ use crate::template::MAX_MESSAGE_LEN;
 const MAX_HANDLERS: usize = 200;
 /// Discord allows 100 global chat input commands per application.
 const MAX_COMMANDS: usize = 100;
+const MAX_SCHEDULES: usize = 20;
 const MAX_OPTIONS: usize = 25;
 /// Statements in one handler, branches included.
 const MAX_STEPS: usize = 100;
@@ -26,6 +27,8 @@ const MAX_DESCRIPTION_LEN: usize = 100;
 pub(crate) const MAX_WAIT_SECONDS: u32 = 300;
 /// Discord limits communication timeouts to 28 days.
 pub(crate) const MAX_TIMEOUT_SECONDS: u32 = 28 * 24 * 60 * 60;
+/// Scheduled triggers run at most once every 30 days.
+const MAX_SCHEDULE_SECONDS: u32 = 30 * 24 * 60 * 60;
 const MAX_MEMBER_ID_TEMPLATE_LEN: usize = 100;
 const MAX_AUDIT_REASON_LEN: usize = 512;
 const MAX_CUSTOM_ID_LEN: usize = 100;
@@ -55,6 +58,8 @@ pub enum CompileError {
     TooManyHandlers,
     #[error("a bot can have at most {MAX_COMMANDS} slash commands")]
     TooManyCommands,
+    #[error("a bot can have at most {MAX_SCHEDULES} scheduled triggers")]
+    TooManySchedules,
     #[error("trigger #{}: {reason}", .handler + 1)]
     Handler {
         handler: usize,
@@ -173,6 +178,12 @@ pub enum HandlerError {
     RequiredAfterOptional(String),
     #[error("the searched text must be 1-{MAX_PATTERN_LEN} characters")]
     InvalidPattern,
+    #[error("`{0}` is not a unicode emoji or a custom emoji written `name:id`")]
+    InvalidEmoji(String),
+    #[error("`{0}` is not a valid Discord message ID")]
+    InvalidMessageId(String),
+    #[error("scheduled triggers must run every 1 minute to 30 days")]
+    InvalidSchedule,
     #[error("a trigger needs at least one action")]
     NoActions,
     #[error("a trigger can have at most {MAX_STEPS} steps")]
@@ -256,13 +267,35 @@ pub struct SlashCommandSpec {
     pub options: Vec<CommandOption>,
 }
 
+/// A scheduled trigger to tick periodically while the bot is online.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ScheduleSpec {
+    pub interval: u32,
+    pub unit: ScheduleUnit,
+}
+
+impl ScheduleSpec {
+    /// Duration between runs in seconds.
+    #[must_use]
+    pub fn seconds(self) -> u64 {
+        let mult: u64 = match self.unit {
+            ScheduleUnit::Minutes => 60,
+            ScheduleUnit::Hours => 3_600,
+            ScheduleUnit::Days => 86_400,
+        };
+        u64::from(self.interval) * mult
+    }
+}
+
 /// What the gateway connection must subscribe to for a program to work.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GatewayNeeds {
-    /// Member join events (privileged `GUILD_MEMBERS` intent).
+    /// Member join and leave events (privileged `GUILD_MEMBERS` intent).
     pub members: bool,
     /// Message events with their content (privileged `MESSAGE_CONTENT` intent).
     pub messages: bool,
+    /// Message reaction add and remove events (`GUILD_MESSAGE_REACTIONS` intent).
+    pub reactions: bool,
 }
 
 /// A checked statement: IDs parsed, names validated.
@@ -431,6 +464,19 @@ pub(crate) struct MessageMatcher {
     pub(crate) handler: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReactionMatcher {
+    pub(crate) emoji: Option<EmojiRef>,
+    pub(crate) message_id: Option<u64>,
+    pub(crate) handler: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScheduleEntry {
+    pub(crate) spec: ScheduleSpec,
+    pub(crate) handler: usize,
+}
+
 /// A program whose every value has been checked against Discord's limits.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompiledProgram {
@@ -438,10 +484,15 @@ pub struct CompiledProgram {
     pub(crate) commands: Vec<SlashCommandSpec>,
     pub(crate) slash: HashMap<String, usize>,
     pub(crate) member_join: Vec<usize>,
+    pub(crate) member_leave: Vec<usize>,
     pub(crate) messages: Vec<MessageMatcher>,
+    pub(crate) reaction_add: Vec<ReactionMatcher>,
+    pub(crate) reaction_remove: Vec<ReactionMatcher>,
     pub(crate) buttons: HashMap<String, usize>,
     pub(crate) selects: HashMap<String, usize>,
-    pub(crate) persistent: bool,
+    pub(crate) schedules: Vec<ScheduleEntry>,
+    /// Member and server variables the program reads or writes.
+    pub(crate) saved: BTreeSet<(Scope, String)>,
 }
 
 impl CompiledProgram {
@@ -451,11 +502,24 @@ impl CompiledProgram {
         &self.commands
     }
 
+    /// Distinct scheduled intervals needed by the program, in handler order.
+    #[must_use]
+    pub fn schedules(&self) -> Vec<ScheduleSpec> {
+        let mut distinct = Vec::new();
+        for entry in &self.schedules {
+            if !distinct.contains(&entry.spec) {
+                distinct.push(entry.spec);
+            }
+        }
+        distinct
+    }
+
     #[must_use]
     pub fn gateway_needs(&self) -> GatewayNeeds {
         GatewayNeeds {
-            members: !self.member_join.is_empty(),
+            members: !self.member_join.is_empty() || !self.member_leave.is_empty(),
             messages: !self.messages.is_empty(),
+            reactions: !self.reaction_add.is_empty() || !self.reaction_remove.is_empty(),
         }
     }
 
@@ -463,7 +527,13 @@ impl CompiledProgram {
     /// the runtime then loads before running it.
     #[must_use]
     pub fn uses_saved_variables(&self) -> bool {
-        self.persistent
+        !self.saved.is_empty()
+    }
+
+    /// Distinct member and server variables, which plans may cap.
+    #[must_use]
+    pub fn saved_variable_count(&self) -> usize {
+        self.saved.len()
     }
 }
 
@@ -471,9 +541,13 @@ impl CompiledProgram {
 enum TriggerKind {
     Slash,
     MemberJoin,
+    MemberLeave,
     Message,
+    ReactionAdd,
+    ReactionRemove,
     ButtonClick,
     SelectMenu,
+    Schedule,
 }
 
 impl TriggerKind {
@@ -481,9 +555,13 @@ impl TriggerKind {
         match self {
             Self::Slash => "slash command",
             Self::MemberJoin => "member join",
+            Self::MemberLeave => "member leave",
             Self::Message => "message contains",
+            Self::ReactionAdd => "reaction added",
+            Self::ReactionRemove => "reaction removed",
             Self::ButtonClick => "button click",
             Self::SelectMenu => "select menu",
+            Self::Schedule => "scheduled task",
         }
     }
 
@@ -522,12 +600,19 @@ impl Program {
 
         let mut compiled = CompiledProgram::default();
         let mut overflow_command = None;
+        let mut overflow_schedule = None;
         for (index, handler) in self.handlers.iter().enumerate() {
             if matches!(handler.trigger, Trigger::SlashCommand { .. })
                 && compiled.commands.len() == MAX_COMMANDS
                 && overflow_command.is_none()
             {
                 overflow_command = Some(index);
+            }
+            if matches!(handler.trigger, Trigger::Schedule { .. })
+                && compiled.schedules.len() == MAX_SCHEDULES
+                && overflow_schedule.is_none()
+            {
+                overflow_schedule = Some(index);
             }
             compile_handler(&mut compiled, index, handler)?;
         }
@@ -537,6 +622,14 @@ impl Program {
                 error: CompileError::TooManyCommands,
                 location: Box::new(ErrorLocation::handler(
                     overflow_command.unwrap_or(MAX_COMMANDS),
+                )),
+            });
+        }
+        if compiled.schedules.len() > MAX_SCHEDULES {
+            return Err(CompileFailure {
+                error: CompileError::TooManySchedules,
+                location: Box::new(ErrorLocation::handler(
+                    overflow_schedule.unwrap_or(MAX_SCHEDULES),
                 )),
             });
         }
@@ -559,34 +652,49 @@ fn compile_handler(
     index: usize,
     handler: &Handler,
 ) -> Result<(), CompileFailure> {
+    let (kind, label, options) = compile_trigger(compiled, index, &handler.trigger)?;
+    if handler.actions.is_empty() {
+        return Err(handler_failure(index, None, HandlerError::NoActions));
+    }
+    let mut checker = Checker {
+        handler: index,
+        trigger: kind,
+        options,
+        steps: 0,
+        saved: BTreeSet::new(),
+        step_refs: Vec::new(),
+        expr_path: Vec::new(),
+        embed_loc: None,
+        component_loc: None,
+    };
+    let steps = checker.block(&handler.actions, 0)?;
+    compiled.saved.extend(checker.saved);
+    compiled.handlers.push(CompiledHandler { label, steps });
+    Ok(())
+}
+
+fn compile_trigger<'a>(
+    compiled: &mut CompiledProgram,
+    index: usize,
+    trigger: &'a Trigger,
+) -> Result<(TriggerKind, String, &'a [CommandOption]), CompileFailure> {
     let at_trigger = |reason| handler_failure(index, None, reason);
-    let (kind, label, options) = match &handler.trigger {
+    Ok(match trigger {
         Trigger::SlashCommand {
             name,
             description,
             options,
         } => {
-            check_name(name).map_err(at_trigger)?;
-            check_description(description).map_err(at_trigger)?;
-            check_options(options)
-                .map_err(|(opt, reason)| handler_failure(index, Some(opt), reason))?;
-            if compiled.slash.insert(name.clone(), index).is_some() {
-                return Err(at_trigger(HandlerError::DuplicateCommand(name.clone())));
-            }
-            compiled.commands.push(SlashCommandSpec {
-                name: name.clone(),
-                description: description.clone(),
-                options: options.clone(),
-            });
+            compile_slash_trigger(compiled, index, name, description, options)?;
             (TriggerKind::Slash, format!("/{name}"), options.as_slice())
         }
         Trigger::MemberJoin {} => {
             compiled.member_join.push(index);
-            (
-                TriggerKind::MemberJoin,
-                "member join".to_owned(),
-                [].as_slice(),
-            )
+            (TriggerKind::MemberJoin, "member join".to_owned(), &[])
+        }
+        Trigger::MemberLeave {} => {
+            compiled.member_leave.push(index);
+            (TriggerKind::MemberLeave, "member leave".to_owned(), &[])
         }
         Trigger::MessageContains {
             pattern,
@@ -608,53 +716,94 @@ fn compile_handler(
             (
                 TriggerKind::Message,
                 format!("message contains \"{pattern}\""),
-                [].as_slice(),
+                &[],
             )
+        }
+        Trigger::ReactionAdd { emoji, message_id } => {
+            let label = push_reaction_handler(
+                &mut compiled.reaction_add,
+                index,
+                "reaction added",
+                emoji.as_deref(),
+                message_id.as_deref(),
+            )
+            .map_err(at_trigger)?;
+            (TriggerKind::ReactionAdd, label, &[])
+        }
+        Trigger::ReactionRemove { emoji, message_id } => {
+            let label = push_reaction_handler(
+                &mut compiled.reaction_remove,
+                index,
+                "reaction removed",
+                emoji.as_deref(),
+                message_id.as_deref(),
+            )
+            .map_err(at_trigger)?;
+            (TriggerKind::ReactionRemove, label, &[])
         }
         Trigger::ButtonClick { id } => {
-            let id = check_component_id(id)
-                .map_err(|()| at_trigger(HandlerError::InvalidComponentId(id.clone())))?;
-            if compiled.buttons.insert(id.to_owned(), index).is_some() {
-                return Err(at_trigger(HandlerError::DuplicateButton(id.to_owned())));
-            }
-            (
-                TriggerKind::ButtonClick,
-                format!("button \"{id}\""),
-                [].as_slice(),
-            )
+            let id = compile_component_trigger(&mut compiled.buttons, index, id, true)
+                .map_err(at_trigger)?;
+            (TriggerKind::ButtonClick, format!("button \"{id}\""), &[])
         }
         Trigger::SelectMenu { id } => {
-            let id = check_component_id(id)
-                .map_err(|()| at_trigger(HandlerError::InvalidComponentId(id.clone())))?;
-            if compiled.selects.insert(id.to_owned(), index).is_some() {
-                return Err(at_trigger(HandlerError::DuplicateSelectMenu(id.to_owned())));
-            }
+            let id = compile_component_trigger(&mut compiled.selects, index, id, false)
+                .map_err(at_trigger)?;
             (
                 TriggerKind::SelectMenu,
                 format!("select menu \"{id}\""),
-                [].as_slice(),
+                &[],
             )
         }
-    };
+        Trigger::Schedule { interval, unit } => {
+            let spec = parse_schedule(*interval, *unit).map_err(at_trigger)?;
+            compiled.schedules.push(ScheduleEntry {
+                spec,
+                handler: index,
+            });
+            (TriggerKind::Schedule, schedule_label(*interval, *unit), &[])
+        }
+    })
+}
 
-    if handler.actions.is_empty() {
-        return Err(at_trigger(HandlerError::NoActions));
+fn compile_slash_trigger(
+    compiled: &mut CompiledProgram,
+    index: usize,
+    name: &str,
+    description: &str,
+    options: &[CommandOption],
+) -> Result<(), CompileFailure> {
+    let at_trigger = |reason| handler_failure(index, None, reason);
+    check_name(name).map_err(at_trigger)?;
+    check_description(description).map_err(at_trigger)?;
+    check_options(options).map_err(|(opt, reason)| handler_failure(index, Some(opt), reason))?;
+    if compiled.slash.insert(name.to_owned(), index).is_some() {
+        return Err(at_trigger(HandlerError::DuplicateCommand(name.to_owned())));
     }
-    let mut checker = Checker {
-        handler: index,
-        trigger: kind,
-        options,
-        steps: 0,
-        persistent: false,
-        step_refs: Vec::new(),
-        expr_path: Vec::new(),
-        embed_loc: None,
-        component_loc: None,
-    };
-    let steps = checker.block(&handler.actions, 0)?;
-    compiled.persistent |= checker.persistent;
-    compiled.handlers.push(CompiledHandler { label, steps });
+    compiled.commands.push(SlashCommandSpec {
+        name: name.to_owned(),
+        description: description.to_owned(),
+        options: options.to_vec(),
+    });
     Ok(())
+}
+
+fn compile_component_trigger<'a>(
+    map: &mut HashMap<String, usize>,
+    index: usize,
+    id: &'a str,
+    is_button: bool,
+) -> Result<&'a str, HandlerError> {
+    let id =
+        check_component_id(id).map_err(|()| HandlerError::InvalidComponentId(id.to_owned()))?;
+    if map.insert(id.to_owned(), index).is_some() {
+        return Err(if is_button {
+            HandlerError::DuplicateButton(id.to_owned())
+        } else {
+            HandlerError::DuplicateSelectMenu(id.to_owned())
+        });
+    }
+    Ok(id)
 }
 
 /// Walks one handler's statements, keeping track of where it is for errors.
@@ -663,7 +812,7 @@ struct Checker<'a> {
     trigger: TriggerKind,
     options: &'a [CommandOption],
     steps: usize,
-    persistent: bool,
+    saved: BTreeSet<(Scope, String)>,
     step_refs: Vec<StepRef>,
     expr_path: Vec<usize>,
     embed_loc: Option<EmbedLocation>,
@@ -748,29 +897,13 @@ impl Checker<'_> {
 
     fn statement(&mut self, statement: &Statement, nesting: usize) -> Result<Step, CompileFailure> {
         let trigger = self.trigger;
-        let not_available = |action: &'static str| StepError::NotAvailable {
-            action,
-            trigger: trigger.name(),
-        };
-
         Ok(match statement {
             Statement::Reply {
                 content,
                 ephemeral,
                 embeds,
                 components,
-            } => {
-                if matches!(trigger, TriggerKind::MemberJoin) {
-                    return Err(self.fail(not_available("reply")));
-                }
-                let message = self
-                    .message(content, embeds, components, true)
-                    .map_err(|reason| self.fail(reason))?;
-                Step::Reply {
-                    message,
-                    ephemeral: *ephemeral && trigger.is_interaction(),
-                }
-            }
+            } => self.reply_step(content, *ephemeral, embeds, components)?,
             Statement::SendMessage {
                 channel_id,
                 content,
@@ -778,68 +911,39 @@ impl Checker<'_> {
                 components,
             } => Step::SendMessage {
                 channel_id: parse_id(channel_id).map_err(|reason| self.fail(reason))?,
-                message: self
-                    .message(content, embeds, components, true)
-                    .map_err(|reason| self.fail(reason))?,
+                message: self.check_message(content, embeds, components, true)?,
             },
             Statement::UpdateMessage {
                 content,
                 embeds,
                 components,
             } => {
-                if !trigger.is_component() {
-                    return Err(self.fail(not_available("update message")));
-                }
+                self.require(trigger.is_component(), "update message")?;
                 Step::UpdateMessage {
-                    message: self
-                        .message(content, embeds, components, false)
-                        .map_err(|reason| self.fail(reason))?,
+                    message: self.check_message(content, embeds, components, false)?,
                 }
             }
             Statement::AddRole { role_id } => {
-                Step::AddRole(parse_id(role_id).map_err(|reason| self.fail(reason))?)
+                Step::AddRole(self.member_role_id("add role", role_id)?)
             }
             Statement::RemoveRole { role_id } => {
-                Step::RemoveRole(parse_id(role_id).map_err(|reason| self.fail(reason))?)
+                Step::RemoveRole(self.member_role_id("remove role", role_id)?)
             }
             Statement::Timeout {
                 member_id,
                 seconds,
                 reason,
-            } => {
-                if *seconds == 0 || *seconds > MAX_TIMEOUT_SECONDS {
-                    return Err(self.fail(StepError::InvalidTimeout));
-                }
-                Step::Timeout {
-                    member_id: self
-                        .member_id(member_id)
-                        .map_err(|reason| self.fail(reason))?,
-                    seconds: *seconds,
-                    reason: self
-                        .optional_text(Some(reason), MAX_AUDIT_REASON_LEN, "moderation reason")
-                        .map_err(|reason| self.fail(reason))?,
-                }
+            } => self.timeout_step(member_id, *seconds, reason)?,
+            Statement::Kick { member_id, reason } => {
+                let (member_id, reason) = self.moderation_target("kick", member_id, reason)?;
+                Step::Kick { member_id, reason }
             }
-            Statement::Kick { member_id, reason } => Step::Kick {
-                member_id: self
-                    .member_id(member_id)
-                    .map_err(|reason| self.fail(reason))?,
-                reason: self
-                    .optional_text(Some(reason), MAX_AUDIT_REASON_LEN, "moderation reason")
-                    .map_err(|reason| self.fail(reason))?,
-            },
-            Statement::Ban { member_id, reason } => Step::Ban {
-                member_id: self
-                    .member_id(member_id)
-                    .map_err(|reason| self.fail(reason))?,
-                reason: self
-                    .optional_text(Some(reason), MAX_AUDIT_REASON_LEN, "moderation reason")
-                    .map_err(|reason| self.fail(reason))?,
-            },
+            Statement::Ban { member_id, reason } => {
+                let (member_id, reason) = self.moderation_target("ban", member_id, reason)?;
+                Step::Ban { member_id, reason }
+            }
             Statement::DeleteMessage {} => {
-                if !matches!(trigger, TriggerKind::Message) {
-                    return Err(self.fail(not_available("delete message")));
-                }
+                self.require(matches!(trigger, TriggerKind::Message), "delete message")?;
                 Step::DeleteMessage
             }
             Statement::DirectMessage { member_id, content } => Step::DirectMessage {
@@ -851,9 +955,15 @@ impl Checker<'_> {
                     .map_err(|reason| self.fail(reason))?,
             },
             Statement::React { emoji } => {
-                if !matches!(trigger, TriggerKind::Message) {
-                    return Err(self.fail(not_available("react")));
-                }
+                self.require(
+                    matches!(
+                        trigger,
+                        TriggerKind::Message
+                            | TriggerKind::ReactionAdd
+                            | TriggerKind::ReactionRemove
+                    ),
+                    "react",
+                )?;
                 Step::React(parse_emoji(emoji).map_err(|reason| self.fail(reason))?)
             }
             Statement::If {
@@ -881,9 +991,104 @@ impl Checker<'_> {
         })
     }
 
+    fn reply_step(
+        &mut self,
+        content: &str,
+        ephemeral: bool,
+        embeds: &[EmbedSpec],
+        components: &[ComponentRow],
+    ) -> Result<Step, CompileFailure> {
+        self.require(
+            !matches!(
+                self.trigger,
+                TriggerKind::MemberJoin | TriggerKind::MemberLeave | TriggerKind::Schedule
+            ),
+            "reply",
+        )?;
+        Ok(Step::Reply {
+            message: self.check_message(content, embeds, components, true)?,
+            ephemeral: ephemeral && self.trigger.is_interaction(),
+        })
+    }
+
+    fn require(&self, allowed: bool, action: &'static str) -> Result<(), CompileFailure> {
+        if allowed {
+            Ok(())
+        } else {
+            Err(self.fail(StepError::NotAvailable {
+                action,
+                trigger: self.trigger.name(),
+            }))
+        }
+    }
+
+    fn timeout_step(
+        &mut self,
+        member_id: &str,
+        seconds: u32,
+        reason: &str,
+    ) -> Result<Step, CompileFailure> {
+        if seconds == 0 || seconds > MAX_TIMEOUT_SECONDS {
+            return Err(self.fail(StepError::InvalidTimeout));
+        }
+        let (member_id, reason) = self.moderation_target("timeout", member_id, reason)?;
+        Ok(Step::Timeout {
+            member_id,
+            seconds,
+            reason,
+        })
+    }
+
+    fn check_message(
+        &mut self,
+        content: &str,
+        embeds: &[EmbedSpec],
+        components: &[ComponentRow],
+        require_body: bool,
+    ) -> Result<CompiledMessage, CompileFailure> {
+        self.message(content, embeds, components, require_body)
+            .map_err(|reason| self.fail(reason))
+    }
+
+    fn member_role_id(
+        &mut self,
+        action: &'static str,
+        role_id: &str,
+    ) -> Result<u64, CompileFailure> {
+        if matches!(
+            self.trigger,
+            TriggerKind::MemberLeave | TriggerKind::Schedule
+        ) {
+            return Err(self.fail(StepError::NotAvailable {
+                action,
+                trigger: self.trigger.name(),
+            }));
+        }
+        parse_id(role_id).map_err(|reason| self.fail(reason))
+    }
+
     fn check_var(&mut self, scope: Scope, name: &str) -> Result<String, CompileFailure> {
         self.variable(scope, name)
             .map_err(|reason| self.fail(reason))
+    }
+
+    fn moderation_target(
+        &mut self,
+        action: &'static str,
+        member_id: &str,
+        reason: &str,
+    ) -> Result<(String, Option<String>), CompileFailure> {
+        if matches!(self.trigger, TriggerKind::Schedule) {
+            return Err(self.fail(StepError::NotAvailable {
+                action,
+                trigger: self.trigger.name(),
+            }));
+        }
+        let member_id = self.member_id(member_id).map_err(|err| self.fail(err))?;
+        let reason = self
+            .optional_text(Some(reason), MAX_AUDIT_REASON_LEN, "moderation reason")
+            .map_err(|err| self.fail(err))?;
+        Ok((member_id, reason))
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Result<Calc, CompileFailure> {
@@ -991,7 +1196,18 @@ impl Checker<'_> {
                 Calc::Or(self.boxed(0, left, next)?, self.boxed(1, right, next)?)
             }
             Expr::Not { value } => Calc::Not(self.boxed(0, value, next)?),
-            Expr::HasRole { role_id } => Calc::HasRole(parse_id(role_id)?),
+            Expr::HasRole { role_id } => {
+                if matches!(
+                    self.trigger,
+                    TriggerKind::MemberLeave | TriggerKind::ReactionRemove | TriggerKind::Schedule
+                ) {
+                    return Err(StepError::NotAvailable {
+                        action: "role check",
+                        trigger: self.trigger.name(),
+                    });
+                }
+                Calc::HasRole(parse_id(role_id)?)
+            }
         })
     }
 
@@ -1178,32 +1394,7 @@ impl Checker<'_> {
             .map(|raw| parse_url(raw, MAX_URL_LEN))
             .transpose()?;
 
-        if spec.fields.len() > MAX_EMBED_FIELDS {
-            self.set_embed_part(
-                embed_idx,
-                Some(EmbedPart::Field {
-                    index: MAX_EMBED_FIELDS,
-                }),
-            );
-            return Err(StepError::TooManyEmbedFields);
-        }
-        let mut fields = Vec::with_capacity(spec.fields.len());
-        for (field_idx, field) in spec.fields.iter().enumerate() {
-            self.set_embed_part(embed_idx, Some(EmbedPart::Field { index: field_idx }));
-            fields.push(CompiledEmbedField {
-                name: self.required_text(
-                    &field.name,
-                    MAX_EMBED_FIELD_NAME_LEN,
-                    "embed field name",
-                )?,
-                value: self.required_text(
-                    &field.value,
-                    MAX_EMBED_FIELD_VALUE_LEN,
-                    "embed field value",
-                )?,
-                inline: field.inline,
-            });
-        }
+        let fields = self.embed_fields(embed_idx, &spec.fields)?;
 
         self.set_embed_part(embed_idx, None);
         let has_content = title.is_some()
@@ -1234,6 +1425,40 @@ impl Checker<'_> {
             return Err(StepError::EmbedTooLarge);
         }
         Ok((compiled, chars))
+    }
+
+    fn embed_fields(
+        &mut self,
+        embed_idx: usize,
+        specs: &[EmbedFieldSpec],
+    ) -> Result<Vec<CompiledEmbedField>, StepError> {
+        if specs.len() > MAX_EMBED_FIELDS {
+            self.set_embed_part(
+                embed_idx,
+                Some(EmbedPart::Field {
+                    index: MAX_EMBED_FIELDS,
+                }),
+            );
+            return Err(StepError::TooManyEmbedFields);
+        }
+        let mut fields = Vec::with_capacity(specs.len());
+        for (field_idx, field) in specs.iter().enumerate() {
+            self.set_embed_part(embed_idx, Some(EmbedPart::Field { index: field_idx }));
+            fields.push(CompiledEmbedField {
+                name: self.required_text(
+                    &field.name,
+                    MAX_EMBED_FIELD_NAME_LEN,
+                    "embed field name",
+                )?,
+                value: self.required_text(
+                    &field.value,
+                    MAX_EMBED_FIELD_VALUE_LEN,
+                    "embed field value",
+                )?,
+                inline: field.inline,
+            });
+        }
+        Ok(fields)
     }
 
     fn components(
@@ -1441,6 +1666,12 @@ impl Checker<'_> {
     }
 
     fn variable(&mut self, scope: Scope, name: &str) -> Result<String, StepError> {
+        if scope != Scope::Local && matches!(self.trigger, TriggerKind::Schedule) {
+            return Err(StepError::NotAvailable {
+                action: "saved variable",
+                trigger: self.trigger.name(),
+            });
+        }
         let valid = !name.is_empty()
             && name.len() <= MAX_NAME_LEN
             && name
@@ -1449,12 +1680,27 @@ impl Checker<'_> {
         if !valid {
             return Err(StepError::InvalidVariableName(name.to_owned()));
         }
-        self.persistent |= scope != Scope::Local;
+        if scope != Scope::Local {
+            self.saved.insert((scope, name.to_owned()));
+        }
         Ok(name.to_owned())
     }
 
+    /// Record the `{member:NAME}` and `{server:NAME}` placeholders of a template.
     fn note_template(&mut self, template: &str) {
-        self.persistent |= template.contains("{member:") || template.contains("{server:");
+        for (prefix, scope) in [("{member:", Scope::Member), ("{server:", Scope::Server)] {
+            let mut rest = template;
+            while let Some(start) = rest.find(prefix) {
+                rest = &rest[start + prefix.len()..];
+                if let Some(end) = rest.find('}') {
+                    let name = &rest[..end];
+                    if !name.is_empty() && !name.contains('{') {
+                        self.saved.insert((scope, name.to_owned()));
+                    }
+                    rest = &rest[end + 1..];
+                }
+            }
+        }
     }
 }
 
@@ -1643,6 +1889,91 @@ fn parse_emoji(value: &str) -> Result<EmojiRef, StepError> {
     Ok(EmojiRef::Unicode(trimmed.to_owned()))
 }
 
+fn push_reaction_handler(
+    list: &mut Vec<ReactionMatcher>,
+    handler: usize,
+    verb: &str,
+    emoji: Option<&str>,
+    message_id: Option<&str>,
+) -> Result<String, HandlerError> {
+    let emoji = optional_trigger_emoji(emoji)?;
+    let message_id = optional_trigger_message_id(message_id)?;
+    let label = reaction_label(verb, emoji.as_ref(), message_id);
+    list.push(ReactionMatcher {
+        emoji,
+        message_id,
+        handler,
+    });
+    Ok(label)
+}
+
+fn optional_trigger_emoji(value: Option<&str>) -> Result<Option<EmojiRef>, HandlerError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_emoji(value)
+        .map(Some)
+        .map_err(|_| HandlerError::InvalidEmoji(value.to_owned()))
+}
+
+fn optional_trigger_message_id(value: Option<&str>) -> Result<Option<u64>, HandlerError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    parse_id(value)
+        .map(Some)
+        .map_err(|_| HandlerError::InvalidMessageId(value.to_owned()))
+}
+
+fn reaction_label(verb: &str, emoji: Option<&EmojiRef>, message_id: Option<u64>) -> String {
+    let mut parts = vec![verb.to_owned()];
+    if let Some(emoji) = emoji {
+        parts.push(match emoji {
+            EmojiRef::Unicode(name) => name.clone(),
+            EmojiRef::Custom { name, .. } => format!(":{name}:"),
+        });
+    }
+    if let Some(message_id) = message_id {
+        parts.push(format!("on {message_id}"));
+    }
+    parts.join(" ")
+}
+
+fn parse_schedule(interval: u32, unit: ScheduleUnit) -> Result<ScheduleSpec, HandlerError> {
+    let spec = ScheduleSpec { interval, unit };
+    let mult: u64 = match unit {
+        ScheduleUnit::Minutes => 60,
+        ScheduleUnit::Hours => 3_600,
+        ScheduleUnit::Days => 86_400,
+    };
+    let valid = u64::from(interval)
+        .checked_mul(mult)
+        .is_some_and(|secs| (60..=u64::from(MAX_SCHEDULE_SECONDS)).contains(&secs));
+    if valid {
+        Ok(spec)
+    } else {
+        Err(HandlerError::InvalidSchedule)
+    }
+}
+
+fn schedule_label(interval: u32, unit: ScheduleUnit) -> String {
+    let unit_name = match (unit, interval == 1) {
+        (ScheduleUnit::Minutes, true) => "minute",
+        (ScheduleUnit::Minutes, false) => "minutes",
+        (ScheduleUnit::Hours, true) => "hour",
+        (ScheduleUnit::Hours, false) => "hours",
+        (ScheduleUnit::Days, true) => "day",
+        (ScheduleUnit::Days, false) => "days",
+    };
+    format!("every {interval} {unit_name}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1694,7 +2025,8 @@ mod tests {
             compiled.gateway_needs(),
             GatewayNeeds {
                 members: true,
-                messages: false
+                messages: false,
+                reactions: false,
             }
         );
     }
@@ -1841,6 +2173,7 @@ mod tests {
         )
         .expect("valid");
         assert!(in_template.uses_saved_variables());
+        assert_eq!(in_template.saved_variable_count(), 1);
     }
 
     #[test]
@@ -2078,5 +2411,204 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn compiles_member_leave_reactions_and_schedules() {
+        let program = Program {
+            handlers: vec![
+                Handler {
+                    trigger: Trigger::MemberLeave {},
+                    actions: vec![Statement::SendMessage {
+                        channel_id: "123456789012345678".to_owned(),
+                        content: "Bye {user.name}".to_owned(),
+                        embeds: Vec::new(),
+                        components: Vec::new(),
+                    }],
+                },
+                Handler {
+                    trigger: Trigger::ReactionAdd {
+                        emoji: Some("👍".to_owned()),
+                        message_id: Some("123456789012345679".to_owned()),
+                    },
+                    actions: vec![Statement::AddRole {
+                        role_id: "123456789012345680".to_owned(),
+                    }],
+                },
+                Handler {
+                    trigger: Trigger::ReactionRemove {
+                        emoji: Some("<:star:123456789012345681>".to_owned()),
+                        message_id: None,
+                    },
+                    actions: vec![Statement::React {
+                        emoji: "👀".to_owned(),
+                    }],
+                },
+                Handler {
+                    trigger: Trigger::Schedule {
+                        interval: 2,
+                        unit: ScheduleUnit::Hours,
+                    },
+                    actions: vec![Statement::SendMessage {
+                        channel_id: "123456789012345678".to_owned(),
+                        content: "Hourly check".to_owned(),
+                        embeds: Vec::new(),
+                        components: Vec::new(),
+                    }],
+                },
+            ],
+        };
+
+        let compiled = program.compile().expect("new event triggers compile");
+        assert_eq!(
+            compiled.gateway_needs(),
+            GatewayNeeds {
+                members: true,
+                messages: false,
+                reactions: true,
+            }
+        );
+        assert_eq!(
+            compiled.schedules(),
+            vec![ScheduleSpec {
+                interval: 2,
+                unit: ScheduleUnit::Hours
+            }]
+        );
+    }
+
+    #[test]
+    fn validates_reaction_triggers_and_schedules() {
+        let bad_emoji = Program {
+            handlers: vec![Handler {
+                trigger: Trigger::ReactionAdd {
+                    emoji: Some("thumbsup".to_owned()),
+                    message_id: None,
+                },
+                actions: vec![reply("hi")],
+            }],
+        };
+        assert_eq!(
+            bad_emoji.compile(),
+            Err(CompileError::Handler {
+                handler: 0,
+                reason: HandlerError::InvalidEmoji("thumbsup".to_owned()),
+            })
+        );
+
+        let bad_message_id = Program {
+            handlers: vec![Handler {
+                trigger: Trigger::ReactionRemove {
+                    emoji: None,
+                    message_id: Some("not-an-id".to_owned()),
+                },
+                actions: vec![reply("hi")],
+            }],
+        };
+        assert_eq!(
+            bad_message_id.compile(),
+            Err(CompileError::Handler {
+                handler: 0,
+                reason: HandlerError::InvalidMessageId("not-an-id".to_owned()),
+            })
+        );
+
+        let bad_schedule = Program {
+            handlers: vec![Handler {
+                trigger: Trigger::Schedule {
+                    interval: 31,
+                    unit: ScheduleUnit::Days,
+                },
+                actions: vec![Statement::Stop {}],
+            }],
+        };
+        assert_eq!(
+            bad_schedule.compile(),
+            Err(CompileError::Handler {
+                handler: 0,
+                reason: HandlerError::InvalidSchedule,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_incompatible_actions_and_vars_on_new_triggers() {
+        let leave_role = Program {
+            handlers: vec![Handler {
+                trigger: Trigger::MemberLeave {},
+                actions: vec![Statement::AddRole {
+                    role_id: "123456789012345678".to_owned(),
+                }],
+            }],
+        };
+        assert!(matches!(
+            leave_role.compile(),
+            Err(CompileError::Handler {
+                reason: HandlerError::Step {
+                    reason: StepError::NotAvailable {
+                        action: "add role",
+                        trigger: "member leave"
+                    },
+                    ..
+                },
+                ..
+            })
+        ));
+
+        let remove_has_role = Program {
+            handlers: vec![Handler {
+                trigger: Trigger::ReactionRemove {
+                    emoji: None,
+                    message_id: None,
+                },
+                actions: vec![Statement::If {
+                    condition: Expr::HasRole {
+                        role_id: "123456789012345678".to_owned(),
+                    },
+                    then_branch: vec![Statement::Stop {}],
+                    else_branch: Vec::new(),
+                }],
+            }],
+        };
+        assert!(matches!(
+            remove_has_role.compile(),
+            Err(CompileError::Handler {
+                reason: HandlerError::Step {
+                    reason: StepError::NotAvailable {
+                        action: "role check",
+                        trigger: "reaction removed"
+                    },
+                    ..
+                },
+                ..
+            })
+        ));
+
+        let schedule_saved_var = Program {
+            handlers: vec![Handler {
+                trigger: Trigger::Schedule {
+                    interval: 5,
+                    unit: ScheduleUnit::Minutes,
+                },
+                actions: vec![Statement::SetVariable {
+                    scope: Scope::Server,
+                    name: "count".to_owned(),
+                    value: Expr::Number { value: 1 },
+                }],
+            }],
+        };
+        assert!(matches!(
+            schedule_saved_var.compile(),
+            Err(CompileError::Handler {
+                reason: HandlerError::Step {
+                    reason: StepError::NotAvailable {
+                        action: "saved variable",
+                        trigger: "scheduled task"
+                    },
+                    ..
+                },
+                ..
+            })
+        ));
     }
 }

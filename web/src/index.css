@@ -65,8 +65,14 @@
     @apply bg-muted font-sans text-foreground antialiased;
   }
 
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
   dialog::backdrop {
     background: oklch(0 0 0 / 0.4);
+    overflow: hidden;
+    overscroll-behavior: contain;
   }
 }
 

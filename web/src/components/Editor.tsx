@@ -1,9 +1,18 @@
 import * as Blockly from "blockly";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Check, ExternalLink, Loader2, RefreshCw, Save } from "lucide-react";
-import { useBlocker } from "react-router";
+import {
+  AlertTriangle,
+  Check,
+  ExternalLink,
+  LayoutTemplate,
+  Loader2,
+  RefreshCw,
+  Save,
+} from "lucide-react";
+import { useBlocker, useSearchParams } from "react-router";
 import { ApiError, api } from "../api.ts";
 import { createTheme, registerBlocks, starterWorkspace, toolbox } from "../blocks/blocks.ts";
+import { type BotTemplate, hasCustomWorkspaceBlocks, insertTemplate } from "../blocks/templates.ts";
 import {
   GenerateError,
   type MissingIntent,
@@ -13,6 +22,7 @@ import {
 } from "../blocks/generate.ts";
 import { buttonClass } from "../lib/styles.ts";
 import type { BotDetail, BotIntents, Program } from "../types.ts";
+import { TemplateDialog } from "./TemplateDialog.tsx";
 import { Button } from "./ui.tsx";
 
 type SaveState =
@@ -62,6 +72,9 @@ export function Editor({
   const [intentsState, setIntentsState] = useState<IntentsState>({ kind: "loading" });
   const [missingIntents, setMissingIntents] = useState<MissingIntent[]>([]);
   const [checkingIntents, setCheckingIntents] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [templatesOpen, setTemplatesOpen] = useState(() => searchParams.get("templates") === "1");
+  const [hasCustomBlocks, setHasCustomBlocks] = useState(false);
 
   // The workspace is loaded once per bot: later saves update `bot.workspace`
   // through `onSaved`, and must not reload the editor under the user.
@@ -134,6 +147,7 @@ export function Editor({
       ? JSON.stringify(Blockly.serialization.workspaces.save(editor))
       : "";
     setDirty(!hasBlocks(saved));
+    setHasCustomBlocks(hasCustomWorkspaceBlocks(editor));
 
     editor.addChangeListener((event) => {
       if (event.isUiEvent) {
@@ -142,6 +156,7 @@ export function Editor({
       setDirty(
         JSON.stringify(Blockly.serialization.workspaces.save(editor)) !== savedSnapshot.current,
       );
+      setHasCustomBlocks(hasCustomWorkspaceBlocks(editor));
       if (
         event.type === Blockly.Events.BLOCK_CHANGE ||
         event.type === Blockly.Events.BLOCK_MOVE ||
@@ -237,7 +252,9 @@ export function Editor({
 
     const needsPrivilegedIntent = program.handlers.some(
       (handler) =>
-        handler.trigger.type === "member_join" || handler.trigger.type === "message_contains",
+        handler.trigger.type === "member_join" ||
+        handler.trigger.type === "member_leave" ||
+        handler.trigger.type === "message_contains",
     );
     if (needsPrivilegedIntent) {
       setSave({ kind: "checking" });
@@ -327,6 +344,45 @@ export function Editor({
     });
   }, [missingIntents]);
 
+  const applyTemplate = useCallback(
+    (template: BotTemplate, values: Record<string, string>, mode: "append" | "replace") => {
+      const editor = workspace.current;
+      if (!editor) {
+        return;
+      }
+      clearSaveWarning(editor);
+      setSave({ kind: "idle" });
+      const firstBlock = insertTemplate(editor, template, values, mode);
+      Blockly.svgResize(editor);
+      if (firstBlock) {
+        editor.centerOnBlock(firstBlock.id);
+      }
+      syncIntentWarnings(editor, latestIntents.current);
+      setHasCustomBlocks(hasCustomWorkspaceBlocks(editor));
+      setDirty(
+        JSON.stringify(Blockly.serialization.workspaces.save(editor)) !== savedSnapshot.current,
+      );
+    },
+    [clearSaveWarning, syncIntentWarnings],
+  );
+
+  const openTemplates = () => {
+    const editor = workspace.current;
+    if (editor) {
+      setHasCustomBlocks(hasCustomWorkspaceBlocks(editor));
+    }
+    setTemplatesOpen(true);
+  };
+
+  const closeTemplates = () => {
+    setTemplatesOpen(false);
+    if (searchParams.has("templates")) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("templates");
+      setSearchParams(next, { replace: true });
+    }
+  };
+
   const busy = save.kind === "checking" || save.kind === "saving";
 
   return (
@@ -335,7 +391,7 @@ export function Editor({
         <div>
           <h3 className="font-semibold">Block editor</h3>
           <p className="text-sm text-muted-foreground">
-            Drag a trigger from the left, then stack actions inside it. Messages accept{" "}
+            Drag a trigger from the left, or start from a template. Messages accept{" "}
             <code className="text-xs">{"{user}"}</code>,{" "}
             <code className="text-xs">{"{option.NAME}"}</code>,{" "}
             <code className="text-xs">{"{selected}"}</code> and saved variables like{" "}
@@ -353,6 +409,10 @@ export function Editor({
             </span>
           )}
           {dirty && !busy && <span className="text-sm text-muted-foreground">Unsaved changes</span>}
+          <Button variant="outline" onClick={openTemplates} disabled={busy}>
+            <LayoutTemplate />
+            Templates
+          </Button>
           <Button onClick={saveProgram} disabled={busy || !dirty}>
             {busy ? <Loader2 className="animate-spin" /> : <Save />}
             {save.kind === "checking"
@@ -394,6 +454,13 @@ export function Editor({
         </div>
       )}
       <div className="min-h-0 flex-1" ref={container} />
+      <TemplateDialog
+        open={templatesOpen}
+        onClose={closeTemplates}
+        onApply={applyTemplate}
+        hasCustomBlocks={hasCustomBlocks}
+        intents={intentsState.kind === "ready" ? intentsState.intents : null}
+      />
     </div>
   );
 }

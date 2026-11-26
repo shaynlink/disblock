@@ -18,16 +18,17 @@ mod value;
 
 pub use compile::{
     Branch, CompileError, CompileFailure, CompiledProgram, ComponentLocation, EmbedLocation,
-    EmbedPart, ErrorLocation, GatewayNeeds, HandlerError, SlashCommandSpec, StepError, StepRef,
+    EmbedPart, ErrorLocation, GatewayNeeds, HandlerError, ScheduleSpec, SlashCommandSpec,
+    StepError, StepRef,
 };
 pub use model::{
     ButtonSpec, ButtonStyle, CommandOption, CompareOp, ComponentRow, EmbedAuthorSpec,
-    EmbedFieldSpec, EmbedFooterSpec, EmbedSpec, Expr, Handler, MathOp, OptionKind, Program, Scope,
-    SelectOptionSpec, Statement, Trigger,
+    EmbedFieldSpec, EmbedFooterSpec, EmbedSpec, Expr, Handler, MathOp, OptionKind, Program,
+    ScheduleUnit, Scope, SelectOptionSpec, Statement, Trigger,
 };
 pub use run::{
-    Effect, EmojiRef, Event, EventKind, Execution, MessagePayload, Random, RenderedButton,
-    RenderedComponentRow, RenderedEmbed, RenderedEmbedAuthor, RenderedEmbedField,
+    Effect, EmojiRef, Event, EventEmoji, EventKind, Execution, MessagePayload, Random,
+    RenderedButton, RenderedComponentRow, RenderedEmbed, RenderedEmbedAuthor, RenderedEmbedField,
     RenderedEmbedFooter, RenderedSelectOption, RunError, SavedVariables, VariableWrite,
 };
 pub use template::{Context, MAX_MESSAGE_LEN};
