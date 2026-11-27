@@ -97,7 +97,7 @@ struct RedirectUrl {
     url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct BillingStatus {
     plan: String,
     status: Option<String>,
@@ -109,19 +109,33 @@ async fn status(
     user: CurrentUser,
     Path(bot_id): Path<Uuid>,
 ) -> Result<Json<BillingStatus>, ApiError> {
+    load_status(&state.db, bot_id, user.id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::NotFound)
+}
+
+/// Billing state of one of `owner_id`'s bots; free bots have no subscription row.
+async fn load_status(
+    db: &PgPool,
+    bot_id: Uuid,
+    owner_id: Uuid,
+) -> Result<Option<BillingStatus>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT bs.status, bs.cancel_at_period_end
+        "SELECT bs.status, COALESCE(bs.cancel_at_period_end, false) AS cancel_at_period_end
          FROM bots b LEFT JOIN bot_subscriptions bs ON bs.bot_id = b.id
          WHERE b.id = $1 AND b.owner_id = $2",
     )
     .bind(bot_id)
-    .bind(user.id)
-    .fetch_optional(&state.db)
+    .bind(owner_id)
+    .fetch_optional(db)
     .await?;
-    let row = row.ok_or(ApiError::NotFound)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
     let subscription_status: Option<String> = row.try_get("status")?;
     let active = subscription_status.as_deref().is_some_and(is_pro_status);
-    Ok(Json(BillingStatus {
+    Ok(Some(BillingStatus {
         plan: if active { "pro" } else { "free" }.to_owned(),
         status: subscription_status,
         cancel_at_period_end: row.try_get("cancel_at_period_end")?,
@@ -720,6 +734,66 @@ mod interval_tests {
         assert!(
             serde_json::from_str::<CheckoutRequest>(&format!(r#"{{{bot},"interval":"week"}}"#))
                 .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    async fn bot(db: &PgPool) -> (Uuid, Uuid) {
+        let (owner, bot) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, discord_id, username) VALUES ($1, '1', 'owner')")
+            .bind(owner)
+            .execute(db)
+            .await
+            .expect("user");
+        sqlx::query(
+            "INSERT INTO bots (id, owner_id, application_id, name, token_nonce, token_ciphertext)
+             VALUES ($1, $2, '2', 'bot', '\\x00', '\\x00')",
+        )
+        .bind(bot)
+        .bind(owner)
+        .execute(db)
+        .await
+        .expect("bot");
+        (owner, bot)
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn reports_free_and_pro_bots(db: PgPool) {
+        let (owner, bot) = bot(&db).await;
+
+        let free = load_status(&db, bot, owner)
+            .await
+            .expect("query")
+            .expect("owned");
+        assert_eq!(free.plan, "free");
+        assert_eq!(free.status, None);
+        assert!(!free.cancel_at_period_end);
+
+        sqlx::query(
+            "INSERT INTO bot_subscriptions
+               (bot_id, stripe_subscription_id, stripe_customer_id, status, cancel_at_period_end, source_event_created_at)
+             VALUES ($1, 'sub_1', 'cus_1', 'active', true, now())",
+        )
+        .bind(bot)
+        .execute(&db)
+        .await
+        .expect("subscription");
+        let pro = load_status(&db, bot, owner)
+            .await
+            .expect("query")
+            .expect("owned");
+        assert_eq!(pro.plan, "pro");
+        assert!(pro.cancel_at_period_end);
+
+        assert!(
+            load_status(&db, bot, Uuid::new_v4())
+                .await
+                .expect("query")
+                .is_none()
         );
     }
 }
