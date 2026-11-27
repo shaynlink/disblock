@@ -13,6 +13,9 @@ kill_timeout = "30s"
 
 [deploy]
   strategy = "rolling"
+  # Schema changes run once, as the owner role in MIGRATION_DATABASE_URL,
+  # before new machines start. The app role cannot alter the schema.
+  release_command = "migrate"
 
 [http_service]
   internal_port = 8080

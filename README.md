@@ -47,11 +47,17 @@ Requirements: Rust 1.98+, Node 26+, pnpm, Docker, `sqlx-cli`.
    docker compose up -d
    ```
 
-3. Run the API (migrations apply on start) and the web app:
+3. Apply the migrations, then run the API and the web app:
+
+   ```bash
+   set -a; source .env; set +a; cargo run -p disblock-server -- migrate
+   ```
 
    ```bash
    set -a; source .env; set +a; cargo run -p disblock-server
    ```
+
+   The server refuses to start on a schema older than the build expects.
 
    ```bash
    cd web && pnpm install && pnpm dev
@@ -78,8 +84,31 @@ deployment.
 
 ### 1. Neon
 
-Create a project in an EU region and copy its **direct** connection string
-(not the `-pooler` one), with `sslmode=require`.
+Create a project in an EU region. Use **direct** connection strings (not the
+`-pooler` ones) with `sslmode=require`, and two roles:
+
+- the owner (`neondb_owner`) for `MIGRATION_DATABASE_URL`: only
+  `disblock-server migrate` uses it, run by Fly before each deploy;
+- `disblock_app` for `DATABASE_URL`: rows only, no schema changes.
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON DATABASE neondb FROM PUBLIC;
+CREATE ROLE disblock_app LOGIN PASSWORD '<generated>' CONNECTION LIMIT 20;
+GRANT CONNECT ON DATABASE neondb TO disblock_app;
+GRANT USAGE ON SCHEMA public TO disblock_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO disblock_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO disblock_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO disblock_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO disblock_app;
+ALTER ROLE disblock_app SET statement_timeout = '10s';
+ALTER ROLE disblock_app SET idle_in_transaction_session_timeout = '30s';
+```
+
+`scripts/configure-secrets.sh staging|production` then sets every secret on
+GitHub, Fly and Cloudflare, asking for the values only you know.
 
 ### 2. Fly.io
 
