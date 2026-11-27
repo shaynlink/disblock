@@ -23,7 +23,7 @@ pub struct Config {
     pub discord_client_id: String,
     pub discord_client_secret: String,
     pub encryption_key: [u8; 32],
-    /// Stripe is optional locally, but its three values must be configured as a set.
+    /// Stripe is optional locally, but its four values must be configured as a set.
     pub stripe: Option<StripeConfig>,
     /// Error tracking is disabled until a DSN is explicitly configured.
     pub sentry: Option<SentryConfig>,
@@ -32,11 +32,14 @@ pub struct Config {
     pub port: u16,
 }
 
-/// Server-only Stripe credentials and the recurring Pro Price to sell.
+/// Server-only Stripe credentials and the recurring Pro Prices to sell.
 pub struct StripeConfig {
     pub secret_key: String,
     pub webhook_secret: String,
+    /// Monthly Pro Price.
     pub pro_price_id: String,
+    /// Yearly Pro Price.
+    pub pro_yearly_price_id: String,
 }
 
 /// Sentry is intentionally opt-in so local development never exports telemetry.
@@ -165,16 +168,27 @@ fn stripe_from_env() -> Result<Option<StripeConfig>, ConfigError> {
     let pro_price_id = env::var("STRIPE_PRO_PRICE_ID")
         .ok()
         .filter(|value| !value.trim().is_empty());
+    let pro_yearly_price_id = env::var("STRIPE_PRO_YEARLY_PRICE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
 
-    match (secret_key, webhook_secret, pro_price_id) {
-        (None, None, None) => Ok(None),
-        (Some(secret_key), Some(webhook_secret), Some(pro_price_id)) => Ok(Some(StripeConfig {
-            secret_key,
-            webhook_secret,
-            pro_price_id,
-        })),
+    match (
+        secret_key,
+        webhook_secret,
+        pro_price_id,
+        pro_yearly_price_id,
+    ) {
+        (None, None, None, None) => Ok(None),
+        (Some(secret_key), Some(webhook_secret), Some(pro_price_id), Some(pro_yearly_price_id)) => {
+            Ok(Some(StripeConfig {
+                secret_key,
+                webhook_secret,
+                pro_price_id,
+                pro_yearly_price_id,
+            }))
+        }
         _ => Err(ConfigError::Invalid {
-            name: "STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET and STRIPE_PRO_PRICE_ID",
+            name: "STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRO_PRICE_ID and STRIPE_PRO_YEARLY_PRICE_ID",
             reason: "must be set together",
         }),
     }

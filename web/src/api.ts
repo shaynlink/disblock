@@ -90,6 +90,9 @@ async function accountExport(): Promise<Blob> {
   return response.blob();
 }
 
+/** How often a Pro subscription renews. */
+export type BillingInterval = "month" | "year";
+
 export const api = {
   me: () => request<User>("GET", "/me"),
   logout: () => request<void>("POST", "/auth/logout"),
@@ -105,8 +108,8 @@ export const api = {
     request<void>("PUT", `/bots/${id}/program`, { workspace, program }),
   executions: (id: string) => request<ExecutionEntry[]>("GET", `/bots/${id}/executions`),
   billingStatus: (id: string) => request<BillingStatus>("GET", `/billing/bots/${id}`),
-  checkout: (botId: string) =>
-    request<{ url: string }>("POST", "/billing/checkout", { bot_id: botId }),
+  checkout: (botId: string, interval: BillingInterval) =>
+    request<{ url: string }>("POST", "/billing/checkout", { bot_id: botId, interval }),
   billingPortal: () => request<{ url: string }>("POST", "/billing/portal"),
 };
 

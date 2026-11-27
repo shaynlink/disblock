@@ -148,7 +148,8 @@ if [ -n "$stripe_key" ]; then
   {
     echo "STRIPE_SECRET_KEY=$stripe_key"
     echo "STRIPE_WEBHOOK_SECRET=$(ask_secret "STRIPE_WEBHOOK_SECRET")"
-    echo "STRIPE_PRO_PRICE_ID=$(ask_visible "STRIPE_PRO_PRICE_ID")"
+    echo "STRIPE_PRO_PRICE_ID=$(ask_visible "STRIPE_PRO_PRICE_ID (monthly price_...)")"
+    echo "STRIPE_PRO_YEARLY_PRICE_ID=$(ask_visible "STRIPE_PRO_YEARLY_PRICE_ID (yearly price_...)")"
   } >>"$env_file"
 fi
 
