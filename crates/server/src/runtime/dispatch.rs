@@ -13,7 +13,9 @@ use twilight_http::api_error::ApiError as DiscordApiError;
 use twilight_http::error::ErrorType;
 use twilight_http::request::{AuditLogReason, channel::reaction::RequestReactionType};
 use twilight_model::application::interaction::application_command::CommandOptionValue;
-use twilight_model::application::interaction::{Interaction, InteractionData, InteractionType};
+use twilight_model::application::interaction::{
+    Interaction, InteractionData, InteractionDataResolved, InteractionType,
+};
 use twilight_model::channel::Message;
 use twilight_model::channel::message::component::{
     ActionRow, Button, ButtonStyle as TwilightButtonStyle, Component, ComponentType, SelectMenu,
@@ -200,7 +202,8 @@ async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction
                 .options
                 .iter()
                 .filter_map(|option| {
-                    render_option(&option.value).map(|value| (option.name.clone(), value))
+                    render_option(&option.value, data.resolved.as_ref())
+                        .map(|value| (option.name.clone(), value))
                 })
                 .collect();
             let context = context_for(
@@ -538,12 +541,22 @@ fn context_for<'a>(
     }
 }
 
-fn render_option(value: &CommandOptionValue) -> Option<String> {
+fn render_option(
+    value: &CommandOptionValue,
+    resolved: Option<&InteractionDataResolved>,
+) -> Option<String> {
     Some(match value {
+        CommandOptionValue::Attachment(id) => resolved
+            .and_then(|data| data.attachments.get(id))
+            .map_or_else(|| id.get().to_string(), |attachment| attachment.url.clone()),
         CommandOptionValue::String(value) => value.clone(),
         CommandOptionValue::Integer(value) => value.to_string(),
+        CommandOptionValue::Number(value) => value.to_string(),
         CommandOptionValue::Boolean(value) => if *value { "yes" } else { "no" }.to_owned(),
         CommandOptionValue::User(id) => format!("<@{id}>"),
+        CommandOptionValue::Channel(id) => format!("<#{id}>"),
+        CommandOptionValue::Role(id) => format!("<@&{id}>"),
+        CommandOptionValue::Mentionable(id) => id.get().to_string(),
         _ => return None,
     })
 }

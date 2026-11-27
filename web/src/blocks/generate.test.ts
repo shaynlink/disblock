@@ -98,6 +98,89 @@ describe("generateProgram", () => {
     ]);
   });
 
+  it("reads every Discord slash-command option kind", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "slash_command",
+            fields: { NAME: "configure", DESCRIPTION: "Configure the bot" },
+            inputs: {
+              OPTIONS: {
+                block: {
+                  type: "command_option",
+                  fields: {
+                    NAME: "decimal",
+                    KIND: "number",
+                    REQUIRED: true,
+                    DESCRIPTION: "A decimal",
+                  },
+                  next: {
+                    block: {
+                      type: "command_option",
+                      fields: {
+                        NAME: "channel",
+                        KIND: "channel",
+                        REQUIRED: false,
+                        DESCRIPTION: "A channel",
+                      },
+                      next: {
+                        block: {
+                          type: "command_option",
+                          fields: {
+                            NAME: "role",
+                            KIND: "role",
+                            REQUIRED: false,
+                            DESCRIPTION: "A role",
+                          },
+                          next: {
+                            block: {
+                              type: "command_option",
+                              fields: {
+                                NAME: "mention",
+                                KIND: "mentionable",
+                                REQUIRED: false,
+                                DESCRIPTION: "A member or role",
+                              },
+                              next: {
+                                block: {
+                                  type: "command_option",
+                                  fields: {
+                                    NAME: "file",
+                                    KIND: "attachment",
+                                    REQUIRED: false,
+                                    DESCRIPTION: "A file",
+                                  },
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const trigger = generateProgram(workspace).handlers[0]?.trigger;
+    if (!trigger || trigger.type !== "slash_command") {
+      throw new Error("expected a slash command");
+    }
+    expect(trigger.options.map((option) => option.kind)).toEqual([
+      "number",
+      "channel",
+      "role",
+      "mentionable",
+      "attachment",
+    ]);
+  });
+
   it("generates moderation actions with a member template", () => {
     const workspace = workspaceFrom({
       blocks: {

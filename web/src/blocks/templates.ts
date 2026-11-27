@@ -99,7 +99,16 @@ function chain(blocks: TemplateBlockState[]): TemplateBlockState {
 function slashOption(spec: {
   name: string;
   description: string;
-  kind: "string" | "integer" | "boolean" | "user";
+  kind:
+    | "string"
+    | "integer"
+    | "number"
+    | "boolean"
+    | "user"
+    | "channel"
+    | "role"
+    | "mentionable"
+    | "attachment";
   required: boolean;
 }): TemplateBlockState {
   return {

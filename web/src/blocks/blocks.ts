@@ -158,8 +158,13 @@ const definitions = [
         options: [
           ["text", "string"],
           ["number", "integer"],
+          ["decimal number", "number"],
           ["yes / no", "boolean"],
           ["member", "user"],
+          ["channel", "channel"],
+          ["role", "role"],
+          ["member or role", "mentionable"],
+          ["attachment", "attachment"],
         ],
       },
       { type: "field_checkbox", name: "REQUIRED", checked: true },

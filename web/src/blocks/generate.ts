@@ -81,7 +81,17 @@ export interface MissingIntent {
   message: string;
 }
 
-const OPTION_KINDS: readonly OptionKind[] = ["string", "integer", "boolean", "user"];
+const OPTION_KINDS: readonly OptionKind[] = [
+  "string",
+  "integer",
+  "number",
+  "boolean",
+  "user",
+  "channel",
+  "role",
+  "mentionable",
+  "attachment",
+];
 const SCHEDULE_UNITS: readonly ScheduleUnit[] = ["minutes", "hours", "days"];
 const BUTTON_STYLES: readonly ButtonStyle[] = ["primary", "secondary", "success", "danger"];
 const SCOPES: readonly Scope[] = ["local", "member", "server"];

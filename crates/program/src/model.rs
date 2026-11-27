@@ -80,8 +80,13 @@ pub struct CommandOption {
 pub enum OptionKind {
     String,
     Integer,
+    Number,
     Boolean,
     User,
+    Channel,
+    Role,
+    Mentionable,
+    Attachment,
 }
 
 /// One step of a handler. Message contents are templates: `{user}`,

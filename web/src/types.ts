@@ -21,7 +21,16 @@ export type Trigger =
   | { type: "select_menu"; id: string }
   | { type: "schedule"; interval: number; unit: ScheduleUnit };
 
-export type OptionKind = "string" | "integer" | "boolean" | "user";
+export type OptionKind =
+  | "string"
+  | "integer"
+  | "number"
+  | "boolean"
+  | "user"
+  | "channel"
+  | "role"
+  | "mentionable"
+  | "attachment";
 
 export interface CommandOption {
   name: string;
