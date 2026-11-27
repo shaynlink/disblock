@@ -16,4 +16,6 @@ thiserror = "2.0.21"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = true
+# Keep file and line tables so Sentry stack traces of the server are readable.
+debug = "line-tables-only"
+strip = "none"

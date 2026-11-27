@@ -168,3 +168,19 @@ Before publishing the service, set these build-time variables for the web app:
 `VITE_LEGAL_PHONE`, `VITE_LEGAL_PUBLICATION_DIRECTOR`, and
 `VITE_LEGAL_CONSUMER_MEDIATOR`. They populate `/legal` and deliberately show a
 visible placeholder when absent; do not publish with placeholders.
+
+### Sentry
+
+Errors, traces, logs, metrics and Session Replay go to the `disblock-server`
+and `disblock-web` projects of the `nvbes` organization.
+
+- Fly: `fly secrets set SENTRY_DSN=<disblock-server DSN>`. The environment
+  comes from `fly.toml` / `fly.staging.toml`, the release from the commit.
+- GitHub: secret `SENTRY_AUTH_TOKEN` (an org token able to write releases),
+  and variable `SENTRY_WEB_DSN` (the `disblock-web` DSN).
+
+Each deploy builds the web app with hidden source maps, uploads them to Sentry
+and deletes them before publishing, then records one release for both
+projects, linked to its commits, with a deploy for the target environment.
+Locally, put `SENTRY_DSN` in `.env` and `VITE_SENTRY_DSN` in `web/.env.local`.
+
