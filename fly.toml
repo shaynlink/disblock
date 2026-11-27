@@ -10,6 +10,8 @@ kill_timeout = "30s"
   PORT = "8080"
   RUST_LOG = "info"
   SENTRY_ENVIRONMENT = "production"
+  # Sample production traffic; errors are always sent.
+  SENTRY_TRACES_SAMPLE_RATE = "0.1"
 
 [deploy]
   strategy = "rolling"

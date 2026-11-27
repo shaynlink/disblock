@@ -9,6 +9,8 @@ kill_timeout = "30s"
   PORT = "8080"
   RUST_LOG = "info"
   SENTRY_ENVIRONMENT = "staging"
+  # Staging traffic is low: keep every trace to debug releases before production.
+  SENTRY_TRACES_SAMPLE_RATE = "1.0"
 
 [deploy]
   strategy = "rolling"
