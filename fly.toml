@@ -2,7 +2,8 @@
 # Keep exactly one machine: every bot holds its gateway connection in this
 # process, so a second machine would answer each event twice.
 app = "disblock-api"
-primary_region = "cdg"
+# Ashburn, Virginia: next to Neon (us-east-2) and Discord's US infrastructure.
+primary_region = "iad"
 kill_signal = "SIGTERM"
 kill_timeout = "30s"
 

@@ -924,7 +924,7 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
       seoDescription:
         "How Disblock handles Discord sign-in data, encrypted bot tokens, execution logs, and bot variables.",
       title: "Privacy Policy",
-      updatedLabel: "Beta notice — Last updated November 26, 2026",
+      updatedLabel: "Beta notice — Last updated November 27, 2026",
       intro:
         "Disblock stores only the minimum data needed to authenticate your Discord account, host your Discord bots, and execute the block programs you configure.",
       sections: [
@@ -953,9 +953,10 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
           ],
         },
         {
-          heading: "4. Hosting & third-party processors",
+          heading: "4. Hosting, processors & international transfers",
           paragraphs: [
-            "Disblock runs its web interface on Cloudflare, its API and bot gateway runtime on Fly.io (EU region), and its PostgreSQL database on Neon, exchanging data with the Discord API strictly to authenticate you and run your bots.",
+            "Disblock's web interface is delivered worldwide by Cloudflare. Its API, bot runtime, and PostgreSQL database run in the eastern United States, on Fly.io (Ashburn, Virginia) and Neon (Ohio), close to Discord's infrastructure so bots answer quickly everywhere. Errors and performance data, including session replays of the web app, go to Sentry; payments are handled by Stripe. Data is exchanged with the Discord API only to authenticate you and run your bots.",
+            "Personal data of users in the European Economic Area, the United Kingdom, and Switzerland is therefore transferred to the United States. These transfers rely on the EU–U.S. Data Privacy Framework where the provider is certified, and otherwise on the European Commission's Standard Contractual Clauses included in each provider's data processing agreement.",
           ],
         },
         {
@@ -1043,7 +1044,7 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
       seoDescription:
         "Comment Disblock traite les données de connexion Discord, les tokens chiffrés, les journaux d'exécution et les variables des bots.",
       title: "Politique de confidentialité",
-      updatedLabel: "Version bêta — Dernière mise à jour le 26 novembre 2026",
+      updatedLabel: "Version bêta — Dernière mise à jour le 27 novembre 2026",
       intro:
         "Disblock ne conserve que les données strictement nécessaires pour authentifier votre compte Discord, héberger vos bots et exécuter les programmes que vous assemblez en blocs.",
       sections: [
@@ -1072,9 +1073,10 @@ export const LEGAL_COPY: Record<Locale, LegalCopy> = {
           ],
         },
         {
-          heading: "4. Hébergement et sous-traitants techniques",
+          heading: "4. Hébergement, sous-traitants et transferts internationaux",
           paragraphs: [
-            "L'interface web est servie via Cloudflare, l'API et le runtime des bots tournent sur Fly.io (région EU) et la base PostgreSQL est hébergée sur Neon, en interaction directe avec l'API Discord pour l'authentification et l'exécution de vos bots.",
+            "L'interface web est distribuée dans le monde entier par Cloudflare. L'API, le runtime des bots et la base PostgreSQL sont hébergés dans l'est des États-Unis, chez Fly.io (Ashburn, Virginie) et Neon (Ohio), à proximité de l'infrastructure de Discord pour que les bots répondent vite partout. Les erreurs et données de performance, y compris des enregistrements de session de l'application web, sont transmises à Sentry ; les paiements sont traités par Stripe. Les échanges avec l'API Discord se limitent à votre authentification et à l'exécution de vos bots.",
+            "Les données personnelles des utilisateurs de l'Espace économique européen, du Royaume-Uni et de la Suisse sont donc transférées aux États-Unis. Ces transferts reposent sur le cadre de protection des données UE–États-Unis (Data Privacy Framework) lorsque le prestataire y est certifié, et à défaut sur les clauses contractuelles types de la Commission européenne prévues dans l'accord de traitement des données de chaque prestataire.",
           ],
         },
         {
