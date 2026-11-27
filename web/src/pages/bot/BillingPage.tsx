@@ -1,14 +1,22 @@
 import { useEffect, useState } from "react";
 import { CreditCard, ExternalLink, Loader2, Sparkles } from "lucide-react";
-import { api, type BillingStatus } from "../../api.ts";
+import { api, type BillingInterval, type BillingStatus } from "../../api.ts";
+import { cn } from "../../lib/styles.ts";
 import { Button, Card, CardContent, CardHeader, Badge } from "../../components/ui.tsx";
 import { useBot } from "./context.ts";
+
+/** Shown before Checkout, which displays the authoritative price and taxes. */
+const PLANS: { interval: BillingInterval; price: string; period: string; note?: string }[] = [
+  { interval: "month", price: "€6", period: "per month" },
+  { interval: "year", price: "€50", period: "per year", note: "2 months free" },
+];
 
 export function BillingPage() {
   const { bot } = useBot();
   const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [busy, setBusy] = useState<"checkout" | "portal" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [billingInterval, setBillingInterval] = useState<BillingInterval>("year");
 
   useEffect(() => {
     let active = true;
@@ -29,7 +37,10 @@ export function BillingPage() {
     setBusy(kind);
     setError(null);
     try {
-      const result = kind === "checkout" ? await api.checkout(bot.id) : await api.billingPortal();
+      const result =
+        kind === "checkout"
+          ? await api.checkout(bot.id, billingInterval)
+          : await api.billingPortal();
       window.location.assign(result.url);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not open billing");
@@ -81,6 +92,37 @@ export function BillingPage() {
             <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
               A payment is required before Pro capabilities can be used again.
             </p>
+          )}
+          {!pro && (
+            <div
+              role="radiogroup"
+              aria-label="Billing period"
+              className="grid gap-3 sm:grid-cols-2"
+            >
+              {PLANS.map((plan) => (
+                <button
+                  key={plan.interval}
+                  type="button"
+                  role="radio"
+                  aria-checked={billingInterval === plan.interval}
+                  onClick={() => setBillingInterval(plan.interval)}
+                  className={cn(
+                    "cursor-pointer rounded-lg border p-4 text-left transition-colors",
+                    billingInterval === plan.interval
+                      ? "border-primary ring-2 ring-primary/20"
+                      : "hover:bg-accent",
+                  )}
+                >
+                  <span className="flex items-baseline gap-1.5">
+                    <span className="text-2xl font-bold">{plan.price}</span>
+                    <span className="text-sm text-muted-foreground">{plan.period}</span>
+                  </span>
+                  <span className="mt-1 block text-xs text-muted-foreground">
+                    {plan.note ?? "Cancel anytime"}
+                  </span>
+                </button>
+              ))}
+            </div>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
           <div className="flex flex-wrap gap-3">

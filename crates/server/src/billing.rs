@@ -70,6 +70,26 @@ pub fn routes() -> Router<AppState> {
 #[derive(Deserialize)]
 struct CheckoutRequest {
     bot_id: Uuid,
+    /// Monthly unless the customer picks yearly billing.
+    #[serde(default)]
+    interval: BillingInterval,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum BillingInterval {
+    #[default]
+    Month,
+    Year,
+}
+
+impl BillingInterval {
+    fn price_id(self, stripe: &StripeConfig) -> &str {
+        match self {
+            Self::Month => &stripe.pro_price_id,
+            Self::Year => &stripe.pro_yearly_price_id,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -140,7 +160,10 @@ async fn checkout(
             ("mode", "subscription".to_owned()),
             ("customer", customer),
             ("client_reference_id", bot_id.clone()),
-            ("line_items[0][price]", stripe.pro_price_id.clone()),
+            (
+                "line_items[0][price]",
+                body.interval.price_id(stripe).to_owned(),
+            ),
             ("line_items[0][quantity]", "1".to_owned()),
             ("success_url", success_url),
             ("cancel_url", cancel_url),
@@ -666,5 +689,37 @@ mod plan_limit_tests {
             check_program_limits(&db, bot, &compiled(hourly, 0)).await,
             Err(ApiError::BadRequest(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+
+    #[test]
+    fn picks_the_price_of_the_chosen_interval() {
+        let stripe = StripeConfig {
+            secret_key: "sk".to_owned(),
+            webhook_secret: "whsec".to_owned(),
+            pro_price_id: "price_month".to_owned(),
+            pro_yearly_price_id: "price_year".to_owned(),
+        };
+        let parse = |json: &str| serde_json::from_str::<CheckoutRequest>(json).expect("valid");
+        let bot = r#""bot_id":"00000000-0000-4000-8000-000000000001""#;
+
+        assert_eq!(
+            parse(&format!("{{{bot}}}")).interval.price_id(&stripe),
+            "price_month"
+        );
+        assert_eq!(
+            parse(&format!(r#"{{{bot},"interval":"year"}}"#))
+                .interval
+                .price_id(&stripe),
+            "price_year"
+        );
+        assert!(
+            serde_json::from_str::<CheckoutRequest>(&format!(r#"{{{bot},"interval":"week"}}"#))
+                .is_err()
+        );
     }
 }

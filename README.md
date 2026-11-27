@@ -123,7 +123,8 @@ fly secrets set \
   ORIGIN_SECRET="$(openssl rand -hex 32)" \
   STRIPE_SECRET_KEY='sk_live_…' \
   STRIPE_WEBHOOK_SECRET='whsec_…' \
-  STRIPE_PRO_PRICE_ID='price_…'
+  STRIPE_PRO_PRICE_ID='price_…' \
+  STRIPE_PRO_YEARLY_PRICE_ID='price_…'
 fly deploy
 fly scale count 1
 ```
@@ -133,8 +134,9 @@ unreadable.
 
 ### 3. Stripe Billing
 
-Create a recurring Pro Price in Stripe and set `STRIPE_PRO_PRICE_ID` to its
-`price_…` id. Configure a Stripe webhook endpoint at
+Create the Pro product in Stripe with two recurring prices, €6 monthly
+(`STRIPE_PRO_PRICE_ID`) and €50 yearly (`STRIPE_PRO_YEARLY_PRICE_ID`), tax
+included; customers pick the period on the bot's Billing page. Configure a Stripe webhook endpoint at
 `https://your-domain/api/stripe/webhook` and give it the
 `checkout.session.completed`, `customer.subscription.created`,
 `customer.subscription.updated`, and `customer.subscription.deleted` events.
