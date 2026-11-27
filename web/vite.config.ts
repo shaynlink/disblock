@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
+import { sentryVitePlugin } from "@sentry/vite-plugin";
 import { type Plugin, createServer, defineConfig, lazyPlugins } from "vite-plus";
 
 interface PrerenderModule {
@@ -273,8 +274,27 @@ export default defineConfig({
       },
     ],
   },
-  plugins: lazyPlugins(() => [react(), tailwindcss(), disblockSeoPlugin()]),
+  plugins: lazyPlugins(() => [
+    react(),
+    tailwindcss(),
+    disblockSeoPlugin(),
+    // Release and source maps upload, only when CI provides an auth token.
+    ...(process.env.SENTRY_AUTH_TOKEN
+      ? [
+          sentryVitePlugin({
+            org: process.env.SENTRY_ORG ?? "nvbes",
+            project: process.env.SENTRY_PROJECT ?? "disblock-web",
+            authToken: process.env.SENTRY_AUTH_TOKEN,
+            release: { name: process.env.VITE_RELEASE_VERSION, setCommits: { auto: true } },
+            sourcemaps: { filesToDeleteAfterUpload: ["./dist/**/*.map"] },
+            telemetry: false,
+          }),
+        ]
+      : []),
+  ]),
   build: {
+    // Uploaded to Sentry then deleted, so production never serves them.
+    sourcemap: "hidden",
     // Blockly alone weighs ~900 kB and is only loaded by the editor page.
     chunkSizeWarningLimit: 1000,
   },

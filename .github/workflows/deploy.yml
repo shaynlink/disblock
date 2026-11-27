@@ -35,10 +35,14 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: ${{ vars.SENTRY_ORG || 'nvbes' }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.RELEASE_VERSION }}
+          # Full history, so Sentry can link the release to its commits.
+          fetch-depth: 0
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Validate deployment environment
         run: |
@@ -67,12 +71,27 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Deploy web worker
         working-directory: web
+        env:
+          # Same release name as the API, so one release covers both projects.
+          VITE_RELEASE_VERSION: ${{ env.RELEASE_VERSION }}
+          VITE_SENTRY_DSN: ${{ vars.SENTRY_WEB_DSN }}
+          VITE_SENTRY_ENVIRONMENT: ${{ env.TARGET }}
+          SENTRY_PROJECT: disblock-web
         run: |
           pnpm install --frozen-lockfile
           pnpm run build
           config=wrangler.staging.jsonc
           if [ "$TARGET" = production ]; then config=wrangler.jsonc; fi
           pnpm exec wrangler deploy --config "$config"
+      - name: Record the Sentry release and deploy
+        if: ${{ env.SENTRY_AUTH_TOKEN != '' }}
+        uses: getsentry/action-release@v3
+        with:
+          environment: ${{ env.TARGET }}
+          projects: disblock-server disblock-web
+          release: ${{ env.RELEASE_VERSION }}
+          set_commits: auto
+          finalize: true
       - name: Notify on deployment failure
         if: ${{ failure() && env.OPS_ALERT_WEBHOOK_URL != '' }}
         env:

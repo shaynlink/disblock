@@ -13,7 +13,7 @@ const VARIABLE_COLOUR = "#a855f7";
 const FLOW_COLOUR = "#64748b";
 
 const PLACEHOLDERS =
-  "Placeholders: {user}, {user.name}, {user.id}, {channel}, {server.id}, {option.NAME}, {selected}, {var:NAME}, {member:NAME}, {server:NAME}";
+  "Placeholders: {user}, {user.name}, {user.id}, {channel}, {message.id}, {server.id}, {emoji}, {option.NAME}, {selected}, {var:NAME}, {member:NAME}, {server:NAME}";
 const NAME_EXTENSION = "disblock_name_field";
 const VARIABLE_EXTENSION = "disblock_variable_field";
 
@@ -65,6 +65,14 @@ const definitions = [
     tooltip: "Runs when someone joins a server. Needs the Server Members intent.",
   },
   {
+    type: "member_leave",
+    message0: "when a member leaves",
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
+    colour: TRIGGER_COLOUR,
+    tooltip: "Runs when someone leaves a server. Needs the Server Members intent.",
+  },
+  {
     type: "message_contains",
     message0: "when a message contains %1",
     args0: [{ type: "field_input", name: "PATTERN", text: "ping" }],
@@ -74,6 +82,30 @@ const definitions = [
     args2: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
     colour: TRIGGER_COLOUR,
     tooltip: "Runs when a message contains this text. Needs the Message Content intent.",
+  },
+  {
+    type: "reaction_add",
+    message0: "when reaction %1 is added",
+    args0: [{ type: "field_input", name: "EMOJI", text: "" }],
+    message1: "on message ID %1",
+    args1: [{ type: "field_input", name: "MESSAGE_ID", text: "" }],
+    message2: "do %1",
+    args2: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
+    colour: TRIGGER_COLOUR,
+    tooltip:
+      "Runs when someone reacts to a message. Leave emoji or message ID blank to match any. Use {emoji} and {message.id}.",
+  },
+  {
+    type: "reaction_remove",
+    message0: "when reaction %1 is removed",
+    args0: [{ type: "field_input", name: "EMOJI", text: "" }],
+    message1: "on message ID %1",
+    args1: [{ type: "field_input", name: "MESSAGE_ID", text: "" }],
+    message2: "do %1",
+    args2: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
+    colour: TRIGGER_COLOUR,
+    tooltip:
+      "Runs when someone removes a reaction. Leave emoji or message ID blank to match any. Use {emoji} and {message.id}.",
   },
   {
     type: "button_click",
@@ -93,6 +125,27 @@ const definitions = [
     colour: TRIGGER_COLOUR,
     tooltip:
       "Runs when someone picks an option from a select menu with this ID. Use {selected} or the selected value block.",
+  },
+  {
+    type: "schedule",
+    message0: "every %1 %2",
+    args0: [
+      { type: "field_number", name: "INTERVAL", value: 1, min: 1, max: 43200, precision: 1 },
+      {
+        type: "field_dropdown",
+        name: "UNIT",
+        options: [
+          ["minutes", "minutes"],
+          ["hours", "hours"],
+          ["days", "days"],
+        ],
+      },
+    ],
+    message1: "do %1",
+    args1: [{ type: "input_statement", name: "ACTIONS", check: "action" }],
+    colour: TRIGGER_COLOUR,
+    tooltip:
+      "Runs automatically at a fixed interval while the bot is online (1 minute to 30 days).",
   },
   {
     type: "command_option",
@@ -688,9 +741,13 @@ export const toolbox: Blockly.utils.toolbox.ToolboxDefinition = {
       contents: [
         { kind: "block", type: "slash_command" },
         { kind: "block", type: "member_join" },
+        { kind: "block", type: "member_leave" },
         { kind: "block", type: "message_contains" },
+        { kind: "block", type: "reaction_add" },
+        { kind: "block", type: "reaction_remove" },
         { kind: "block", type: "button_click" },
         { kind: "block", type: "select_menu_trigger" },
+        { kind: "block", type: "schedule" },
       ],
     },
     {

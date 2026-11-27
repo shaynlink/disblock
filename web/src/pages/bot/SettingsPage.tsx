@@ -73,8 +73,8 @@ export function SettingsPage() {
         <CardContent>
           <ul className="list-disc space-y-1.5 pl-5 text-sm text-muted-foreground">
             <li>
-              <span className="font-medium text-foreground">When a member joins</span> needs the{" "}
-              <span className="font-medium text-foreground">Server Members Intent</span>.
+              <span className="font-medium text-foreground">When a member joins / leaves</span>{" "}
+              needs the <span className="font-medium text-foreground">Server Members Intent</span>.
             </li>
             <li>
               <span className="font-medium text-foreground">When a message contains</span> needs the{" "}

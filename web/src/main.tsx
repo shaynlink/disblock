@@ -1,3 +1,5 @@
+import "./sentry.ts";
+import * as Sentry from "@sentry/react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Navigate, createBrowserRouter } from "react-router";
@@ -23,7 +25,7 @@ const publicRoutes = SUPPORTED_LOCALES.flatMap((locale) => {
   return routes;
 });
 
-const router = createBrowserRouter([
+const router = Sentry.wrapCreateBrowserRouterV7(createBrowserRouter)([
   {
     path: "/",
     element: <App />,
@@ -58,7 +60,11 @@ if (!root) {
   throw new Error("index.html is missing the #root element");
 }
 
-createRoot(root).render(
+createRoot(root, {
+  onUncaughtError: Sentry.reactErrorHandler(),
+  onCaughtError: Sentry.reactErrorHandler(),
+  onRecoverableError: Sentry.reactErrorHandler(),
+}).render(
   <StrictMode>
     <RouterProvider router={router} />
   </StrictMode>,

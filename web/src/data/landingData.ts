@@ -517,7 +517,7 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
           "Up to 5 hosted Discord bots per account",
           "24/7 managed runtime with hot-swap saves",
           "Slash commands, member joins & message triggers",
-          "Logic blocks & persistent member/server variables",
+          "Logic blocks & up to 5 saved member/server variables",
           "Real-time execution activity log",
         ],
         cta: "Start free with Discord",
@@ -525,14 +525,14 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
       proPlan: {
         name: "Pro (per bot)",
         badge: "Coming soon",
-        price: "€5–8",
-        period: "/ bot / month (planned)",
+        price: "€6",
+        period: "/ bot / month, or €50 / year",
         description:
           "Built for active communities that need advanced Discord components and scale.",
         features: [
           "Higher execution limits & priority reliability",
           "Rich embeds, buttons & select menus",
-          "Scheduled tasks & custom bot status",
+          "Unlimited saved variables & scheduled tasks",
           "Ready-made community templates",
           'No "Made with Disblock" watermark',
         ],
@@ -823,7 +823,7 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
           "Jusqu'à 5 bots Discord hébergés par compte",
           "Hébergement 24/7 avec mise à jour à chaud",
           "Commandes slash, arrivées de membres et mots-clés",
-          "Blocs logiques et variables persistantes membre/serveur",
+          "Blocs logiques et jusqu'à 5 variables sauvegardées",
           "Historique d'exécution en temps réel",
         ],
         cta: "Démarrer gratuitement avec Discord",
@@ -831,14 +831,14 @@ export const LANDING_COPY: Record<Locale, LandingCopy> = {
       proPlan: {
         name: "Pro (par bot)",
         badge: "Bientôt disponible",
-        price: "5–8 €",
-        period: "/ bot / mois (prévu)",
+        price: "6 €",
+        period: "/ bot / mois, ou 50 € / an",
         description:
           "Pensé pour les communautés actives qui veulent plus de composants et de volume.",
         features: [
           "Limites d'exécutions étendues & priorité",
           "Embeds riches, boutons et menus de sélection",
-          "Tâches planifiées & statut personnalisé du bot",
+          "Variables sauvegardées illimitées & tâches planifiées",
           "Modèles prêts à l'emploi (tickets, modération…)",
           "Suppression de la mention « Made with Disblock »",
         ],

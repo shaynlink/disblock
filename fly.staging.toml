@@ -9,9 +9,14 @@ kill_timeout = "30s"
   PORT = "8080"
   RUST_LOG = "info"
   SENTRY_ENVIRONMENT = "staging"
+  # Staging traffic is low: keep every trace to debug releases before production.
+  SENTRY_TRACES_SAMPLE_RATE = "1.0"
 
 [deploy]
   strategy = "rolling"
+  # Schema changes run once, as the owner role in MIGRATION_DATABASE_URL,
+  # before new machines start. The app role cannot alter the schema.
+  release_command = "migrate"
 
 [http_service]
   internal_port = 8080

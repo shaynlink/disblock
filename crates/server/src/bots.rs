@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::auth::CurrentUser;
-use crate::billing;
 use crate::error::ApiError;
 use crate::runtime::{BotIntents, RuntimeError, bot_client, is_unauthorized};
 
@@ -292,7 +291,7 @@ async fn save_program(
         return Err(ApiError::NotFound);
     }
 
-    billing::check_program_limits(&state.db, id, &body.program).await?;
+    crate::billing::check_program_limits(&state.db, id, &compiled).await?;
 
     let needs = compiled.gateway_needs();
     if needs.members || needs.messages {
@@ -334,7 +333,7 @@ fn check_intents(
         let handler = program
             .handlers
             .iter()
-            .position(|h| matches!(h.trigger, Trigger::MemberJoin {}))
+            .position(|h| matches!(h.trigger, Trigger::MemberJoin {} | Trigger::MemberLeave {}))
             .unwrap_or(0);
         return Err(ApiError::ProgramError {
             message: "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving."

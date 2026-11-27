@@ -27,6 +27,8 @@ pub struct Config {
     pub stripe: Option<StripeConfig>,
     /// Error tracking is disabled until a DSN is explicitly configured.
     pub sentry: Option<SentryConfig>,
+    /// Shared with the Cloudflare Worker, which then vouches for client IPs.
+    pub origin_secret: Option<String>,
     pub port: u16,
 }
 
@@ -74,6 +76,18 @@ impl Config {
 
         let stripe = stripe_from_env()?;
         let sentry = sentry_from_env()?;
+        let origin_secret = env::var("ORIGIN_SECRET")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        if origin_secret
+            .as_ref()
+            .is_some_and(|secret| secret.len() < 32)
+        {
+            return Err(ConfigError::Invalid {
+                name: "ORIGIN_SECRET",
+                reason: "must be at least 32 characters (openssl rand -hex 32)",
+            });
+        }
 
         Ok(Self {
             database_url: required("DATABASE_URL")?,
@@ -83,6 +97,7 @@ impl Config {
             encryption_key,
             stripe,
             sentry,
+            origin_secret,
             port,
         })
     }

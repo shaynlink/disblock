@@ -27,16 +27,42 @@ pub enum Trigger {
     },
     /// A member joins a server the bot is in.
     MemberJoin {},
+    /// A member leaves a server the bot is in.
+    MemberLeave {},
     /// A message containing `pattern` is posted in a channel the bot can read.
     MessageContains {
         pattern: String,
         #[serde(default)]
         case_sensitive: bool,
     },
+    /// A reaction is added to a message in a server.
+    ReactionAdd {
+        #[serde(default)]
+        emoji: Option<String>,
+        #[serde(default)]
+        message_id: Option<String>,
+    },
+    /// A reaction is removed from a message in a server.
+    ReactionRemove {
+        #[serde(default)]
+        emoji: Option<String>,
+        #[serde(default)]
+        message_id: Option<String>,
+    },
     /// A button on a message is clicked.
     ButtonClick { id: String },
     /// An option is chosen from a select menu on a message.
     SelectMenu { id: String },
+    /// Runs repeatedly on a fixed interval while the bot is online.
+    Schedule { interval: u32, unit: ScheduleUnit },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleUnit {
+    Minutes,
+    Hours,
+    Days,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

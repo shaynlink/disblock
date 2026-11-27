@@ -708,6 +708,7 @@ describe("editor validation mapping and intents", () => {
         languageVersion: 0,
         blocks: [
           { type: "member_join", id: "join_blk", x: 0, y: 0 },
+          { type: "member_leave", id: "leave_blk", x: 0, y: 100 },
           {
             type: "message_contains",
             id: "msg_blk",
@@ -735,7 +736,108 @@ describe("editor validation mapping and intents", () => {
         message:
           "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving.",
       },
+      {
+        intent: "members",
+        label: "Server Members Intent",
+        blockId: "leave_blk",
+        message:
+          "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving.",
+      },
     ]);
     expect(findMissingIntents(workspace, { members: true, message_content: true })).toEqual([]);
+  });
+
+  it("reads member_leave, reaction triggers, and schedules", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "member_leave",
+            id: "trig_leave",
+            x: 0,
+            y: 0,
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "send_message",
+                  fields: { CONTENT: "Bye {user}", CHANNEL_ID: "123456789012345678" },
+                },
+              },
+            },
+          },
+          {
+            type: "reaction_add",
+            id: "trig_react_add",
+            x: 0,
+            y: 120,
+            fields: { EMOJI: "👍", MESSAGE_ID: "123456789012345679" },
+            inputs: {
+              ACTIONS: {
+                block: { type: "add_role", fields: { ROLE_ID: "123456789012345680" } },
+              },
+            },
+          },
+          {
+            type: "reaction_remove",
+            id: "trig_react_rem",
+            x: 0,
+            y: 260,
+            fields: { EMOJI: "", MESSAGE_ID: "" },
+            inputs: {
+              ACTIONS: {
+                block: { type: "remove_role", fields: { ROLE_ID: "123456789012345680" } },
+              },
+            },
+          },
+          {
+            type: "schedule",
+            id: "trig_sched",
+            x: 0,
+            y: 400,
+            fields: { INTERVAL: 6, UNIT: "hours" },
+            inputs: {
+              ACTIONS: {
+                block: { type: "flow_stop" },
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    const { program, map } = generateProgramWithMap(workspace);
+    expect(program).toEqual({
+      handlers: [
+        {
+          trigger: { type: "member_leave" },
+          actions: [
+            {
+              type: "send_message",
+              channel_id: "123456789012345678",
+              content: "Bye {user}",
+            },
+          ],
+        },
+        {
+          trigger: {
+            type: "reaction_add",
+            emoji: "👍",
+            message_id: "123456789012345679",
+          },
+          actions: [{ type: "add_role", role_id: "123456789012345680" }],
+        },
+        {
+          trigger: { type: "reaction_remove" },
+          actions: [{ type: "remove_role", role_id: "123456789012345680" }],
+        },
+        {
+          trigger: { type: "schedule", interval: 6, unit: "hours" },
+          actions: [{ type: "stop" }],
+        },
+      ],
+    });
+    expect(resolveErrorBlockId(map, { handler: 1 })).toBe("trig_react_add");
+    expect(resolveErrorBlockId(map, { handler: 3 })).toBe("trig_sched");
   });
 });

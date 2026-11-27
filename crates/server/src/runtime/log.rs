@@ -35,10 +35,47 @@ impl ExecutionLog {
     }
 
     pub fn record(&self, record: Record) {
+        report_metrics(&record);
         if let Err(error) = self.tx.try_send(record) {
             tracing::warn!(%error, "execution log is full, dropping a record");
         }
     }
+}
+
+/// Trigger kind, without the user-chosen names, so metrics stay low cardinality.
+fn trigger_kind(trigger: &str) -> &'static str {
+    match trigger {
+        t if t.starts_with('/') => "slash_command",
+        t if t.starts_with("message") => "message",
+        t if t.starts_with("member join") => "member_join",
+        t if t.starts_with("member leave") => "member_leave",
+        t if t.starts_with("reaction") => "reaction",
+        t if t.starts_with("button") => "button",
+        t if t.starts_with("select") => "select_menu",
+        t if t.starts_with("every") || t.starts_with("schedule") => "schedule",
+        _ => "other",
+    }
+}
+
+fn report_metrics(record: &Record) {
+    let kind = trigger_kind(&record.trigger);
+    let outcome = if record.error.is_none() {
+        "success"
+    } else {
+        "error"
+    };
+    sentry::metrics::counter("bot.executions", 1)
+        .attribute("trigger.kind", kind)
+        .attribute("outcome", outcome)
+        .capture();
+    sentry::metrics::distribution(
+        "bot.execution.duration",
+        record.duration.as_secs_f64() * 1000.0,
+    )
+    .unit(sentry::protocol::Unit::Millisecond)
+    .attribute("trigger.kind", kind)
+    .attribute("outcome", outcome)
+    .capture();
 }
 
 async fn write(db: PgPool, mut rx: mpsc::Receiver<Record>) {

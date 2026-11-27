@@ -1,4 +1,4 @@
-import { type ComponentProps, type ReactNode, useEffect, useRef } from "react";
+import { type ComponentProps, type ReactNode, useEffect, useId, useRef } from "react";
 import { X } from "lucide-react";
 import { type ButtonSize, type ButtonVariant, buttonClass, cn } from "../lib/styles.ts";
 import type { BotStatus } from "../types.ts";
@@ -140,21 +140,29 @@ export function PageHeader({
   );
 }
 
+const DIALOG_WIDTH = {
+  md: "max-w-lg",
+  xl: "max-w-4xl",
+} as const;
+
 /** A modal built on the native <dialog> element. */
 export function Dialog({
   open,
   onClose,
   title,
   description,
+  size = "md",
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   description?: string;
+  size?: keyof typeof DIALOG_WIDTH;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
 
   useEffect(() => {
     const dialog = ref.current;
@@ -168,15 +176,55 @@ export function Dialog({
     }
   }, [open]);
 
+  // Progressive enhancement fallback for browsers without native `closedby="any"` (e.g., Safari).
+  useEffect(() => {
+    const dialog = ref.current;
+    if (!dialog || "closedBy" in HTMLDialogElement.prototype) {
+      return;
+    }
+    const outside = (event: PointerEvent) => {
+      const rect = dialog.getBoundingClientRect();
+      return (
+        event.clientX < rect.left ||
+        event.clientX > rect.right ||
+        event.clientY < rect.top ||
+        event.clientY > rect.bottom
+      );
+    };
+    let pressedOutside = false;
+    const onDown = (event: PointerEvent) => {
+      pressedOutside = outside(event);
+    };
+    const onUp = (event: PointerEvent) => {
+      if (pressedOutside && outside(event)) {
+        dialog.close();
+      }
+      pressedOutside = false;
+    };
+    dialog.addEventListener("pointerdown", onDown);
+    dialog.addEventListener("pointerup", onUp);
+    return () => {
+      dialog.removeEventListener("pointerdown", onDown);
+      dialog.removeEventListener("pointerup", onUp);
+    };
+  }, []);
+
   return (
     <dialog
       ref={ref}
+      aria-labelledby={titleId}
       onClose={onClose}
-      className="m-auto w-full max-w-lg rounded-xl border bg-background p-0 text-foreground shadow-lg"
+      {...({ closedby: "any" } as Record<string, string>)}
+      className={cn(
+        "m-auto max-h-[90dvh] w-full overflow-y-auto rounded-xl border bg-background p-0 text-foreground shadow-lg",
+        DIALOG_WIDTH[size],
+      )}
     >
       <div className="relative grid gap-4 p-6">
         <div className="space-y-1.5 pr-8">
-          <h2 className="text-lg leading-none font-semibold">{title}</h2>
+          <h1 id={titleId} className="text-lg leading-none font-semibold">
+            {title}
+          </h1>
           {description && <p className="text-sm text-muted-foreground">{description}</p>}
         </div>
         <button

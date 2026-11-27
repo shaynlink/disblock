@@ -1,3 +1,4 @@
+import * as Sentry from "@sentry/react";
 import type {
   Bot,
   BotDetail,
@@ -25,13 +26,27 @@ export class ApiError extends Error {
   }
 }
 
+/** `/bots/<uuid>/program` → `/bots/:id/program`, so metrics stay low cardinality. */
+function routeOf(path: string): string {
+  return path.split("?")[0]!.replace(/\/[0-9a-f-]{36}(?=\/|$)/gi, "/:id");
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const started = performance.now();
   const response = await fetch(`/api${path}`, {
     method,
     credentials: "same-origin",
     headers: body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  const attributes = { route: `${method} ${routeOf(path)}`, status: response.status };
+  Sentry.metrics.distribution("api.request.duration", performance.now() - started, {
+    unit: "millisecond",
+    attributes,
+  });
+  if (response.status >= 500) {
+    Sentry.logger.error("API request failed", attributes);
+  }
 
   if (!response.ok) {
     let message = `Request failed (${response.status})`;

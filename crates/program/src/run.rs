@@ -10,7 +10,7 @@ use crate::compile::{
     MAX_EMBED_TITLE_LEN, MAX_EMBED_TOTAL_LEN, MAX_SELECT_OPTION_DESCRIPTION_LEN,
     MAX_SELECT_OPTION_LABEL_LEN, MAX_SELECT_PLACEHOLDER_LEN, MAX_WAIT_SECONDS, Step,
 };
-use crate::model::{ButtonStyle, CompareOp, MathOp, Scope};
+use crate::model::{ButtonStyle, CompareOp, MathOp, ScheduleUnit, Scope};
 use crate::template::{Context, MAX_MESSAGE_LEN, render_max};
 use crate::value::Value;
 
@@ -30,14 +30,42 @@ pub enum EmojiRef {
     },
 }
 
+/// Emoji on a gateway reaction event, without allocating.
+#[derive(Debug, Clone, Copy)]
+pub enum EventEmoji<'a> {
+    Unicode(&'a str),
+    Custom { id: u64 },
+}
+
 /// A Discord event, reduced to what programs can react to.
 #[derive(Debug, Clone, Copy)]
 pub enum EventKind<'a> {
-    SlashCommand { name: &'a str },
+    SlashCommand {
+        name: &'a str,
+    },
     MemberJoin,
-    Message { content: &'a str },
-    ButtonClick { id: &'a str },
-    SelectMenu { id: &'a str },
+    MemberLeave,
+    Message {
+        content: &'a str,
+    },
+    ReactionAdd {
+        emoji: EventEmoji<'a>,
+        message_id: u64,
+    },
+    ReactionRemove {
+        emoji: EventEmoji<'a>,
+        message_id: u64,
+    },
+    ButtonClick {
+        id: &'a str,
+    },
+    SelectMenu {
+        id: &'a str,
+    },
+    Schedule {
+        interval: u32,
+        unit: ScheduleUnit,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -255,6 +283,7 @@ impl CompiledProgram {
         let matched: Vec<usize> = match event.kind {
             EventKind::SlashCommand { name } => self.slash.get(name).copied().into_iter().collect(),
             EventKind::MemberJoin => self.member_join.clone(),
+            EventKind::MemberLeave => self.member_leave.clone(),
             EventKind::Message { content } => {
                 let lowered = content.to_lowercase();
                 self.messages
@@ -270,14 +299,50 @@ impl CompiledProgram {
                     .map(|matcher| matcher.handler)
                     .collect()
             }
+            EventKind::ReactionAdd { emoji, message_id } => {
+                matching_reactions(&self.reaction_add, emoji, message_id)
+            }
+            EventKind::ReactionRemove { emoji, message_id } => {
+                matching_reactions(&self.reaction_remove, emoji, message_id)
+            }
             EventKind::ButtonClick { id } => self.buttons.get(id).copied().into_iter().collect(),
             EventKind::SelectMenu { id } => self.selects.get(id).copied().into_iter().collect(),
+            EventKind::Schedule { interval, unit } => self
+                .schedules
+                .iter()
+                .filter(|entry| entry.spec.interval == interval && entry.spec.unit == unit)
+                .map(|entry| entry.handler)
+                .collect(),
         };
 
         matched
             .into_iter()
             .map(|index| plan(&self.handlers[index], &event.context, saved, random))
             .collect()
+    }
+}
+
+fn matching_reactions(
+    matchers: &[crate::compile::ReactionMatcher],
+    emoji: EventEmoji<'_>,
+    message_id: u64,
+) -> Vec<usize> {
+    matchers
+        .iter()
+        .filter(|matcher| {
+            matcher.message_id.is_none_or(|want| want == message_id)
+                && emoji_matches(matcher.emoji.as_ref(), emoji)
+        })
+        .map(|matcher| matcher.handler)
+        .collect()
+}
+
+fn emoji_matches(expected: Option<&EmojiRef>, actual: EventEmoji<'_>) -> bool {
+    match (expected, actual) {
+        (None, _) => true,
+        (Some(EmojiRef::Unicode(want)), EventEmoji::Unicode(got)) => want == got,
+        (Some(EmojiRef::Custom { id: want, .. }), EventEmoji::Custom { id: got }) => *want == got,
+        _ => false,
     }
 }
 
@@ -851,13 +916,15 @@ mod tests {
 
     fn context<'a>(options: &'a [(String, String)], roles: &'a [u64]) -> Context<'a> {
         Context {
-            user_id: 42,
-            user_name: "ada",
+            user_id: Some(42),
+            user_name: Some("ada"),
             roles,
             guild_id: Some(7),
             channel_id: Some(9),
+            message_id: Some(99),
             options,
             selected: None,
+            emoji: None,
         }
     }
 
@@ -1217,5 +1284,150 @@ mod tests {
             r#"{"handlers":[{"trigger":{"type":"member_join","extra":1},"actions":[]}]}"#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn runs_member_leave_and_schedule_handlers() {
+        let compiled = program(
+            r#"{"handlers":[
+                {"trigger":{"type":"member_leave"},
+                 "actions":[{"type":"send_message","channel_id":"123456789012345678","content":"Goodbye {user.name}"}]},
+                {"trigger":{"type":"schedule","interval":15,"unit":"minutes"},
+                 "actions":[{"type":"set_variable","scope":"local","name":"n","value":{"type":"number","value":3}},
+                            {"type":"send_message","channel_id":"123456789012345678","content":"Tick {var:n}"}]}
+            ]}"#,
+        );
+        let saved = SavedVariables::default();
+
+        let leave = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::MemberLeave,
+                    context: context(&[], &[]),
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("member leave matched");
+        assert_eq!(leave.trigger, "member leave");
+        assert_eq!(
+            leave.effects,
+            vec![Effect::SendMessage {
+                channel_id: 123_456_789_012_345_678,
+                message: MessagePayload::text("Goodbye ada"),
+            }]
+        );
+
+        let schedule_ctx = Context {
+            user_id: None,
+            user_name: None,
+            roles: &[],
+            guild_id: None,
+            channel_id: None,
+            message_id: None,
+            options: &[],
+            selected: None,
+            emoji: None,
+        };
+        let schedule = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::Schedule {
+                        interval: 15,
+                        unit: ScheduleUnit::Minutes,
+                    },
+                    context: schedule_ctx,
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("schedule matched");
+        assert_eq!(schedule.trigger, "every 15 minutes");
+        assert_eq!(
+            schedule.effects,
+            vec![Effect::SendMessage {
+                channel_id: 123_456_789_012_345_678,
+                message: MessagePayload::text("Tick 3"),
+            }]
+        );
+    }
+
+    #[test]
+    fn runs_reaction_add_and_remove_handlers() {
+        let compiled = program(
+            r#"{"handlers":[
+                {"trigger":{"type":"reaction_add","emoji":"👍","message_id":"123456789012345679"},
+                 "actions":[{"type":"add_role","role_id":"111111111111111111"},{"type":"reply","content":"Reacted {emoji} on {message.id}"}]},
+                {"trigger":{"type":"reaction_remove"},
+                 "actions":[{"type":"remove_role","role_id":"111111111111111111"}]}
+            ]}"#,
+        );
+        let saved = SavedVariables::default();
+        let mut reaction_ctx = context(&[], &[]);
+        reaction_ctx.message_id = Some(123_456_789_012_345_679);
+        reaction_ctx.emoji = Some("👍");
+
+        let wrong_msg = compiled.handle(
+            &Event {
+                kind: EventKind::ReactionAdd {
+                    emoji: EventEmoji::Unicode("👍"),
+                    message_id: 999,
+                },
+                context: reaction_ctx,
+            },
+            &saved,
+            &mut Highest,
+        );
+        assert!(wrong_msg.is_empty());
+
+        let reaction_add = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::ReactionAdd {
+                        emoji: EventEmoji::Unicode("👍"),
+                        message_id: 123_456_789_012_345_679,
+                    },
+                    context: reaction_ctx,
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("reaction add matched");
+        assert_eq!(
+            reaction_add.effects,
+            vec![
+                Effect::AddRole {
+                    role_id: 111_111_111_111_111_111,
+                },
+                Effect::Reply {
+                    message: MessagePayload::text("Reacted 👍 on 123456789012345679"),
+                    ephemeral: false,
+                },
+            ]
+        );
+
+        let reaction_remove = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::ReactionRemove {
+                        emoji: EventEmoji::Custom { id: 555 },
+                        message_id: 999,
+                    },
+                    context: reaction_ctx,
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("reaction remove matched wildcard");
+        assert_eq!(
+            reaction_remove.effects,
+            vec![Effect::RemoveRole {
+                role_id: 111_111_111_111_111_111,
+            }]
+        );
     }
 }

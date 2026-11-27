@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use disblock_program::{
-    ButtonStyle, CompiledProgram, Context, Effect, EmojiRef, Event, EventKind, Execution,
-    MessagePayload, Random, RenderedButton, RenderedComponentRow, RenderedEmbed, SavedVariables,
+    ButtonStyle, CompiledProgram, Context, Effect, EmojiRef, Event, EventEmoji, EventKind,
+    Execution, MessagePayload, Random, RenderedButton, RenderedComponentRow, RenderedEmbed,
+    SavedVariables, ScheduleSpec,
 };
 use time::OffsetDateTime;
 use twilight_http::api_error::ApiError as DiscordApiError;
@@ -21,6 +22,7 @@ use twilight_model::channel::message::component::{
 use twilight_model::channel::message::{
     AllowedMentions, Embed, EmojiReactionType, MentionType, MessageFlags,
 };
+use twilight_model::gateway::GatewayReaction;
 use twilight_model::gateway::event::Event as GatewayEvent;
 use twilight_model::guild::Member;
 use twilight_model::http::interaction::{
@@ -57,9 +59,9 @@ async fn plan(
     program: &CompiledProgram,
     event: &Event<'_>,
 ) -> Result<Vec<Execution>, String> {
-    match event.context.guild_id {
-        Some(guild_id) if program.uses_saved_variables() => {
-            variables::plan_and_save(&bot.db, bot.id, guild_id, event.context.user_id, |saved| {
+    match (event.context.guild_id, event.context.user_id) {
+        (Some(guild_id), Some(user_id)) if program.uses_saved_variables() => {
+            variables::plan_and_save(&bot.db, bot.id, guild_id, user_id, |saved| {
                 program.handle(event, saved, &mut ThreadRandom)
             })
             .await
@@ -105,13 +107,74 @@ fn role_ids(roles: &[Id<RoleMarker>]) -> Vec<u64> {
 pub async fn handle(bot: Arc<BotContext>, program: Arc<CompiledProgram>, event: GatewayEvent) {
     match event {
         GatewayEvent::InteractionCreate(interaction) => {
-            on_interaction(&bot, &program, interaction.0).await;
+            // Boxed: this future is large and would bloat every event task.
+            Box::pin(on_interaction(&bot, &program, interaction.0)).await;
         }
         GatewayEvent::MemberAdd(member) => {
             on_member_add(&bot, &program, member.guild_id, &member.member).await;
         }
+        GatewayEvent::MemberRemove(member) => {
+            on_member_remove(&bot, &program, member.guild_id, &member.user).await;
+        }
         GatewayEvent::MessageCreate(message) => on_message(&bot, &program, &message).await,
+        GatewayEvent::ReactionAdd(reaction) => {
+            on_reaction(&bot, &program, &reaction.0, true).await;
+        }
+        GatewayEvent::ReactionRemove(reaction) => {
+            on_reaction(&bot, &program, &reaction.0, false).await;
+        }
         _ => {}
+    }
+}
+
+pub async fn on_schedule(bot: &BotContext, program: &CompiledProgram, spec: ScheduleSpec) {
+    let event = Event {
+        kind: EventKind::Schedule {
+            interval: spec.interval,
+            unit: spec.unit,
+        },
+        context: Context {
+            user_id: None,
+            user_name: None,
+            roles: &[],
+            guild_id: None,
+            channel_id: None,
+            message_id: None,
+            options: &[],
+            selected: None,
+            emoji: None,
+        },
+    };
+    let target = Target {
+        guild_id: None,
+        user_id: None,
+    };
+    run_many(
+        bot,
+        program,
+        &event,
+        target,
+        || Reply::Unavailable,
+        "scheduled task",
+    )
+    .await;
+}
+
+async fn run_many(
+    bot: &BotContext,
+    program: &CompiledProgram,
+    event: &Event<'_>,
+    target: Target,
+    make_reply: impl Fn() -> Reply<'static>,
+    failure_label: &str,
+) {
+    match plan(bot, program, event).await {
+        Ok(executions) => {
+            for execution in executions {
+                run(bot, execution, target, make_reply()).await;
+            }
+        }
+        Err(error) => record_failure(bot, failure_label, error),
     }
 }
 
@@ -145,6 +208,7 @@ async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction
                 &roles,
                 interaction.guild_id,
                 channel_id,
+                None,
                 &options,
                 None,
             );
@@ -189,15 +253,16 @@ async fn on_interaction(bot: &BotContext, program: &CompiledProgram, interaction
                 ),
                 _ => return,
             };
+            let source_message = interaction.message.as_ref().map(|m| (m.channel_id, m.id));
             let context = context_for(
                 user,
                 &roles,
                 interaction.guild_id,
                 channel_id,
+                source_message.map(|(_, id)| id),
                 &[],
                 selected_ref,
             );
-            let source_message = interaction.message.as_ref().map(|m| (m.channel_id, m.id));
             run_interaction(
                 bot,
                 program,
@@ -238,7 +303,7 @@ async fn run_interaction(
     });
     let target = Target {
         guild_id: interaction.guild_id,
-        user_id,
+        user_id: Some(user_id),
     };
 
     let executions = match planned {
@@ -267,23 +332,53 @@ async fn on_member_add(
         return;
     }
     let roles = role_ids(&member.roles);
-    let context = context_for(&member.user, &roles, Some(guild_id), None, &[], None);
+    let context = context_for(&member.user, &roles, Some(guild_id), None, None, &[], None);
     let target = Target {
         guild_id: Some(guild_id),
-        user_id: member.user.id,
+        user_id: Some(member.user.id),
     };
     let event = Event {
         kind: EventKind::MemberJoin,
         context,
     };
-    match plan(bot, program, &event).await {
-        Ok(executions) => {
-            for execution in executions {
-                run(bot, execution, target, Reply::Unavailable).await;
-            }
-        }
-        Err(error) => record_failure(bot, "member join", error),
+    run_many(
+        bot,
+        program,
+        &event,
+        target,
+        || Reply::Unavailable,
+        "member join",
+    )
+    .await;
+}
+
+async fn on_member_remove(
+    bot: &BotContext,
+    program: &CompiledProgram,
+    guild_id: Id<GuildMarker>,
+    user: &User,
+) {
+    if user.bot {
+        return;
     }
+    let context = context_for(user, &[], Some(guild_id), None, None, &[], None);
+    let target = Target {
+        guild_id: Some(guild_id),
+        user_id: Some(user.id),
+    };
+    let event = Event {
+        kind: EventKind::MemberLeave,
+        context,
+    };
+    run_many(
+        bot,
+        program,
+        &event,
+        target,
+        || Reply::Unavailable,
+        "member leave",
+    )
+    .await;
 }
 
 async fn on_message(bot: &BotContext, program: &CompiledProgram, message: &Message) {
@@ -301,12 +396,13 @@ async fn on_message(bot: &BotContext, program: &CompiledProgram, message: &Messa
         &roles,
         message.guild_id,
         Some(message.channel_id),
+        Some(message.id),
         &[],
         None,
     );
     let target = Target {
         guild_id: message.guild_id,
-        user_id: message.author.id,
+        user_id: Some(message.author.id),
     };
     let event = Event {
         kind: EventKind::Message {
@@ -314,18 +410,110 @@ async fn on_message(bot: &BotContext, program: &CompiledProgram, message: &Messa
         },
         context,
     };
-    match plan(bot, program, &event).await {
-        Ok(executions) => {
-            for execution in executions {
-                let reply = Reply::Message {
-                    channel_id: message.channel_id,
-                    message_id: message.id,
-                };
-                run(bot, execution, target, reply).await;
-            }
-        }
-        Err(error) => record_failure(bot, "message", error),
+    run_many(
+        bot,
+        program,
+        &event,
+        target,
+        || Reply::Message {
+            channel_id: message.channel_id,
+            message_id: message.id,
+        },
+        "message",
+    )
+    .await;
+}
+
+async fn on_reaction(
+    bot: &BotContext,
+    program: &CompiledProgram,
+    reaction: &GatewayReaction,
+    added: bool,
+) {
+    let Some(guild_id) = reaction.guild_id else {
+        return;
+    };
+    if bot.bot_user_id.get() == Some(&reaction.user_id)
+        || reaction
+            .member
+            .as_ref()
+            .is_some_and(|member| member.user.bot)
+    {
+        return;
     }
+    let roles = reaction
+        .member
+        .as_ref()
+        .map(|member| role_ids(&member.roles))
+        .unwrap_or_default();
+    let user_name = reaction
+        .member
+        .as_ref()
+        .map(|member| display_name(&member.user));
+    let (event_emoji, rendered_emoji) = reaction_emoji(&reaction.emoji);
+    let context = Context {
+        user_id: Some(reaction.user_id.get()),
+        user_name,
+        roles: &roles,
+        guild_id: Some(guild_id.get()),
+        channel_id: Some(reaction.channel_id.get()),
+        message_id: Some(reaction.message_id.get()),
+        options: &[],
+        selected: None,
+        emoji: Some(&rendered_emoji),
+    };
+    let target = Target {
+        guild_id: Some(guild_id),
+        user_id: Some(reaction.user_id),
+    };
+    let message_id = reaction.message_id.get();
+    let kind = if added {
+        EventKind::ReactionAdd {
+            emoji: event_emoji,
+            message_id,
+        }
+    } else {
+        EventKind::ReactionRemove {
+            emoji: event_emoji,
+            message_id,
+        }
+    };
+    let event = Event { kind, context };
+    let trigger_label = if added {
+        "reaction added"
+    } else {
+        "reaction removed"
+    };
+    run_many(
+        bot,
+        program,
+        &event,
+        target,
+        || Reply::Message {
+            channel_id: reaction.channel_id,
+            message_id: reaction.message_id,
+        },
+        trigger_label,
+    )
+    .await;
+}
+
+fn reaction_emoji(emoji: &EmojiReactionType) -> (EventEmoji<'_>, String) {
+    match emoji {
+        EmojiReactionType::Unicode { name } => (EventEmoji::Unicode(name), name.clone()),
+        EmojiReactionType::Custom { animated, id, name } => {
+            let text = match name.as_deref() {
+                Some(name) if *animated => format!("<a:{name}:{id}>"),
+                Some(name) => format!("<:{name}:{id}>"),
+                None => id.to_string(),
+            };
+            (EventEmoji::Custom { id: id.get() }, text)
+        }
+    }
+}
+
+fn display_name(user: &User) -> &str {
+    user.global_name.as_deref().unwrap_or(&user.name)
 }
 
 fn context_for<'a>(
@@ -333,17 +521,20 @@ fn context_for<'a>(
     roles: &'a [u64],
     guild_id: Option<Id<GuildMarker>>,
     channel_id: Option<Id<ChannelMarker>>,
+    message_id: Option<Id<MessageMarker>>,
     options: &'a [(String, String)],
     selected: Option<&'a str>,
 ) -> Context<'a> {
     Context {
-        user_id: user.id.get(),
-        user_name: user.global_name.as_deref().unwrap_or(&user.name),
+        user_id: Some(user.id.get()),
+        user_name: Some(display_name(user)),
         roles,
         guild_id: guild_id.map(Id::get),
         channel_id: channel_id.map(Id::get),
+        message_id: message_id.map(Id::get),
         options,
         selected,
+        emoji: None,
     }
 }
 
@@ -361,7 +552,7 @@ fn render_option(value: &CommandOptionValue) -> Option<String> {
 #[derive(Clone, Copy)]
 struct Target {
     guild_id: Option<Id<GuildMarker>>,
-    user_id: Id<UserMarker>,
+    user_id: Option<Id<UserMarker>>,
 }
 
 const FAILURE_NOTICE: &str = "Something went wrong while running this command.";
@@ -411,11 +602,14 @@ async fn save_writes(
     let guild_id = target
         .guild_id
         .ok_or_else(|| "variables can only be saved inside a server".to_owned())?;
+    let user_id = target
+        .user_id
+        .ok_or_else(|| "variables require a member".to_owned())?;
     variables::save(
         &bot.db,
         bot.id,
         guild_id.get(),
-        target.user_id.get(),
+        user_id.get(),
         &execution.writes,
     )
     .await
@@ -435,7 +629,12 @@ async fn perform(
     let guild_id = || {
         target
             .guild_id
-            .ok_or_else(|| "roles can only be changed inside a server".to_owned())
+            .ok_or_else(|| "this action can only be used inside a server".to_owned())
+    };
+    let member_target = || {
+        target
+            .user_id
+            .ok_or("roles can only be changed for a member")
     };
 
     match effect {
@@ -447,35 +646,18 @@ async fn perform(
         Effect::SendMessage {
             channel_id,
             message,
-        } => {
-            let channel_id =
-                Id::<ChannelMarker>::new_checked(*channel_id).ok_or("invalid channel ID")?;
-            let (embeds, components) = build_rich(message)?;
-            let mut req = http.create_message(channel_id);
-            if let Some(content) = message.content.as_deref() {
-                req = req.content(content);
-            }
-            if !embeds.is_empty() {
-                req = req.embeds(&embeds);
-            }
-            if !components.is_empty() {
-                req = req.components(&components);
-            }
-            req.await
-                .map(drop)
-                .map_err(|error| describe(&error, "send the message"))
-        }
+        } => send_channel_message(http, *channel_id, message).await,
         Effect::UpdateMessage { message } => reply.update(bot, message).await,
         Effect::AddRole { role_id } => {
             let role_id = Id::new_checked(*role_id).ok_or("invalid role ID")?;
-            http.add_guild_member_role(guild_id()?, target.user_id, role_id)
+            http.add_guild_member_role(guild_id()?, member_target()?, role_id)
                 .await
                 .map(drop)
                 .map_err(|error| describe(&error, "add the role"))
         }
         Effect::RemoveRole { role_id } => {
             let role_id = Id::new_checked(*role_id).ok_or("invalid role ID")?;
-            http.remove_guild_member_role(guild_id()?, target.user_id, role_id)
+            http.remove_guild_member_role(guild_id()?, member_target()?, role_id)
                 .await
                 .map(drop)
                 .map_err(|error| describe(&error, "remove the role"))
@@ -484,24 +666,7 @@ async fn perform(
             member_id,
             seconds,
             reason,
-        } => {
-            let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
-            let until = OffsetDateTime::now_utc()
-                .checked_add(time::Duration::seconds(i64::from(*seconds)))
-                .ok_or("invalid timeout duration")?;
-            let until = Timestamp::from_secs(until.unix_timestamp())
-                .map_err(|error| format!("invalid timeout expiry: {error}"))?;
-            let mut request = http
-                .update_guild_member(guild_id()?, member_id)
-                .communication_disabled_until(Some(until));
-            if let Some(reason) = reason {
-                request = request.reason(reason);
-            }
-            request
-                .await
-                .map(drop)
-                .map_err(|error| describe(&error, "timeout the member"))
-        }
+        } => perform_timeout(http, guild_id()?, *member_id, *seconds, reason.as_deref()).await,
         Effect::Kick { member_id, reason } => {
             let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
             let mut request = http.remove_guild_member(guild_id()?, member_id);
@@ -537,42 +702,101 @@ async fn perform(
                 .map(drop)
                 .map_err(|error| describe(&error, "delete the message"))
         }
-        Effect::DirectMessage { member_id, content } => {
-            let member_id = Id::new_checked(*member_id).ok_or("invalid member ID")?;
-            let channel = http
-                .create_private_channel(member_id)
-                .await
-                .map_err(|error| describe(&error, "open a private channel"))?
-                .model()
-                .await
-                .map_err(|error| format!("could not open a private channel: {error}"))?;
-            http.create_message(channel.id)
-                .content(content)
-                .await
-                .map(drop)
-                .map_err(|error| describe(&error, "send the direct message"))
-        }
-        Effect::React { emoji } => {
-            let Reply::Message {
-                channel_id,
-                message_id,
-            } = *reply
-            else {
-                return Err("reactions need a message".to_owned());
-            };
-            let emoji = match emoji {
-                EmojiRef::Unicode(name) => RequestReactionType::Unicode { name },
-                EmojiRef::Custom { name, id, .. } => RequestReactionType::Custom {
-                    id: Id::new_checked(*id).ok_or("invalid emoji ID")?,
-                    name: Some(name),
-                },
-            };
-            http.create_reaction(channel_id, message_id, &emoji)
-                .await
-                .map(drop)
-                .map_err(|error| describe(&error, "react"))
-        }
+        Effect::DirectMessage { member_id, content } => perform_dm(http, *member_id, content).await,
+        Effect::React { emoji } => perform_react(http, reply, emoji).await,
     }
+}
+
+async fn send_channel_message(
+    http: &twilight_http::Client,
+    channel_id: u64,
+    message: &MessagePayload,
+) -> Result<(), String> {
+    let channel_id = Id::<ChannelMarker>::new_checked(channel_id).ok_or("invalid channel ID")?;
+    let (embeds, components) = build_rich(message)?;
+    let mut req = http.create_message(channel_id);
+    if let Some(content) = message.content.as_deref() {
+        req = req.content(content);
+    }
+    if !embeds.is_empty() {
+        req = req.embeds(&embeds);
+    }
+    if !components.is_empty() {
+        req = req.components(&components);
+    }
+    req.await
+        .map(drop)
+        .map_err(|error| describe(&error, "send the message"))
+}
+
+async fn perform_timeout(
+    http: &twilight_http::Client,
+    guild_id: Id<GuildMarker>,
+    member_id: u64,
+    seconds: u32,
+    reason: Option<&str>,
+) -> Result<(), String> {
+    let member_id = Id::new_checked(member_id).ok_or("invalid member ID")?;
+    let until = OffsetDateTime::now_utc()
+        .checked_add(time::Duration::seconds(i64::from(seconds)))
+        .ok_or("invalid timeout duration")?;
+    let until = Timestamp::from_secs(until.unix_timestamp())
+        .map_err(|error| format!("invalid timeout expiry: {error}"))?;
+    let mut request = http
+        .update_guild_member(guild_id, member_id)
+        .communication_disabled_until(Some(until));
+    if let Some(reason) = reason {
+        request = request.reason(reason);
+    }
+    request
+        .await
+        .map(drop)
+        .map_err(|error| describe(&error, "timeout the member"))
+}
+
+async fn perform_dm(
+    http: &twilight_http::Client,
+    member_id: u64,
+    content: &str,
+) -> Result<(), String> {
+    let member_id = Id::new_checked(member_id).ok_or("invalid member ID")?;
+    let channel = http
+        .create_private_channel(member_id)
+        .await
+        .map_err(|error| describe(&error, "open a private channel"))?
+        .model()
+        .await
+        .map_err(|error| format!("could not open a private channel: {error}"))?;
+    http.create_message(channel.id)
+        .content(content)
+        .await
+        .map(drop)
+        .map_err(|error| describe(&error, "send the direct message"))
+}
+
+async fn perform_react(
+    http: &twilight_http::Client,
+    reply: &Reply<'_>,
+    emoji: &EmojiRef,
+) -> Result<(), String> {
+    let Reply::Message {
+        channel_id,
+        message_id,
+    } = *reply
+    else {
+        return Err("reactions need a message".to_owned());
+    };
+    let emoji = match emoji {
+        EmojiRef::Unicode(name) => RequestReactionType::Unicode { name },
+        EmojiRef::Custom { name, id, .. } => RequestReactionType::Custom {
+            id: Id::new_checked(*id).ok_or("invalid emoji ID")?,
+            name: Some(name),
+        },
+    };
+    http.create_reaction(channel_id, message_id, &emoji)
+        .await
+        .map(drop)
+        .map_err(|error| describe(&error, "react"))
 }
 
 fn allowed_mentions() -> AllowedMentions {

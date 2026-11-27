@@ -1,7 +1,7 @@
 //! Error reporting and performance tracing. The SDK is a no-op until `SENTRY_DSN`
 //! is configured, which keeps local development data on the developer machine.
 
-use sentry::integrations::tracing::{ErrorLayer, SpanLayer};
+use sentry::integrations::tracing::{ErrorLayer, LogLayer, SpanLayer};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer as _;
 use tracing_subscriber::filter::LevelFilter;
@@ -18,7 +18,9 @@ pub fn init(config: Option<&SentryConfig>) -> Option<sentry::ClientInitGuard> {
             .maybe_release(config.release.clone())
             // Production defaults to 10%; deployments may lower or raise this
             // deliberately with SENTRY_TRACES_SAMPLE_RATE.
-            .traces_sample_rate(config.traces_sample_rate);
+            .traces_sample_rate(config.traces_sample_rate)
+            .send_default_pii(false)
+            .attach_stacktrace(true);
         sentry::init(options)
     })
 }
@@ -32,5 +34,11 @@ pub fn init_tracing() {
         // Discord content and would also consume the error budget too quickly.
         .with(SpanLayer::new().with_filter(LevelFilter::INFO))
         .with(ErrorLayer::new().with_filter(LevelFilter::ERROR))
+        // INFO and above, linked to the active trace, as Sentry structured logs.
+        .with(
+            LogLayer::new()
+                .enable_span_attributes()
+                .with_filter(LevelFilter::INFO),
+        )
         .init();
 }

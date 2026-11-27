@@ -6,10 +6,11 @@ actions, execution history. Enough for toy bots, not for paying customers.
 ## Defaults until decided otherwise
 
 - **Market**: international, English first; French translation in P1.
-- **Pricing**: per bot. Free (1 bot, capped executions, "Made with Disblock"
-  in embeds) and Pro per bot (around €5-8/month, to check against
-  competitors): unlimited triggers, persistent data, scheduled tasks, custom
-  status.
+- **Pricing** (decided after the competitor review, about half of BotGhost):
+  Free (1,000 executions a month, up to 5 saved variables, no scheduled
+  triggers) and Pro per bot at €6/month or €50/year (unlimited saved
+  variables, scheduled tasks). An "all bots" plan around €15/month comes
+  later, once billing supports per-account subscriptions.
 - **First use case**: community bots (welcome, roles, levels), then
   moderation, then tickets.
 
@@ -17,17 +18,17 @@ actions, execution history. Enough for toy bots, not for paying customers.
 
 | # | Feature | Status |
 | --- | --- | --- |
-| 1 | Stripe subscriptions: plans, checkout, customer portal, webhooks, limits enforced by the server | |
+| 1 | Stripe subscriptions: plans, checkout, customer portal, webhooks, limits enforced by the server | done |
 | 2 | Logic blocks: if/else, comparisons, and/or/not, has role, random, math, wait, stop | done |
 | 3 | Persistent data: per-server and per-member variables (counters, points, levels) | done |
 | 4 | Rich messages: embeds, buttons and select menus, with "on click" triggers | done |
 | 5 | Moderation actions: timeout, kick, ban, delete message, DM a member | done |
-| 6 | More events: member leaves, reaction added/removed, scheduled tasks | |
-| 7 | Ready-made templates: welcome, moderation, reaction roles, tickets, levels | |
+| 6 | More events: member leaves, reaction added/removed, scheduled tasks | done |
+| 7 | Ready-made templates: welcome, moderation, reaction roles, tickets, levels | done |
 | 8 | Validation in the editor: errors on the faulty block, missing intents detected before saving | done |
-| 9 | Legal and account: legal notice, terms, privacy policy, GDPR export and deletion | |
-| 10 | Hosting reliability: resume Discord sessions across deploys, execution limits per plan | |
-| 11 | Operations: CI/CD, staging, error tracking, alerts, database backups | |
+| 9 | Legal and account: legal notice, terms, privacy policy, GDPR export and deletion | done |
+| 10 | Hosting reliability: resume Discord sessions across deploys, execution limits per plan | done |
+| 11 | Operations: CI/CD, staging, error tracking, alerts, database backups | done |
 
 ## P1 — competitive at launch
 

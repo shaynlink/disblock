@@ -8,12 +8,18 @@ export interface Handler {
   actions: Statement[];
 }
 
+export type ScheduleUnit = "minutes" | "hours" | "days";
+
 export type Trigger =
   | { type: "slash_command"; name: string; description: string; options: CommandOption[] }
   | { type: "member_join" }
+  | { type: "member_leave" }
   | { type: "message_contains"; pattern: string; case_sensitive: boolean }
+  | { type: "reaction_add"; emoji?: string; message_id?: string }
+  | { type: "reaction_remove"; emoji?: string; message_id?: string }
   | { type: "button_click"; id: string }
-  | { type: "select_menu"; id: string };
+  | { type: "select_menu"; id: string }
+  | { type: "schedule"; interval: number; unit: ScheduleUnit };
 
 export type OptionKind = "string" | "integer" | "boolean" | "user";
 

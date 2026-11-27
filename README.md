@@ -47,11 +47,17 @@ Requirements: Rust 1.98+, Node 26+, pnpm, Docker, `sqlx-cli`.
    docker compose up -d
    ```
 
-3. Run the API (migrations apply on start) and the web app:
+3. Apply the migrations, then run the API and the web app:
+
+   ```bash
+   set -a; source .env; set +a; cargo run -p disblock-server -- migrate
+   ```
 
    ```bash
    set -a; source .env; set +a; cargo run -p disblock-server
    ```
+
+   The server refuses to start on a schema older than the build expects.
 
    ```bash
    cd web && pnpm install && pnpm dev
@@ -78,8 +84,31 @@ deployment.
 
 ### 1. Neon
 
-Create a project in an EU region and copy its **direct** connection string
-(not the `-pooler` one), with `sslmode=require`.
+Create a project in an EU region. Use **direct** connection strings (not the
+`-pooler` ones) with `sslmode=require`, and two roles:
+
+- the owner (`neondb_owner`) for `MIGRATION_DATABASE_URL`: only
+  `disblock-server migrate` uses it, run by Fly before each deploy;
+- `disblock_app` for `DATABASE_URL`: rows only, no schema changes.
+
+```sql
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON DATABASE neondb FROM PUBLIC;
+CREATE ROLE disblock_app LOGIN PASSWORD '<generated>' CONNECTION LIMIT 20;
+GRANT CONNECT ON DATABASE neondb TO disblock_app;
+GRANT USAGE ON SCHEMA public TO disblock_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO disblock_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO disblock_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO disblock_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE neondb_owner IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO disblock_app;
+ALTER ROLE disblock_app SET statement_timeout = '10s';
+ALTER ROLE disblock_app SET idle_in_transaction_session_timeout = '30s';
+```
+
+`scripts/configure-secrets.sh staging|production` then sets every secret on
+GitHub, Fly and Cloudflare, asking for the values only you know.
 
 ### 2. Fly.io
 
@@ -91,6 +120,7 @@ fly secrets set \
   DISCORD_CLIENT_ID='…' \
   DISCORD_CLIENT_SECRET='…' \
   ENCRYPTION_KEY="$(openssl rand -base64 32)" \
+  ORIGIN_SECRET="$(openssl rand -hex 32)" \
   STRIPE_SECRET_KEY='sk_live_…' \
   STRIPE_WEBHOOK_SECRET='whsec_…' \
   STRIPE_PRO_PRICE_ID='price_…'
@@ -117,7 +147,10 @@ the three Stripe variables unset keeps billing disabled for local development.
 
 ### 4. Cloudflare
 
-Set `API_ORIGIN` in `web/wrangler.jsonc` to the Fly app URL, then:
+Set `API_ORIGIN` in `web/wrangler.jsonc` to the Fly app URL, and give the
+Worker the same `ORIGIN_SECRET` as Fly so rate limits apply per browser
+rather than per Cloudflare egress address (`cd web && pnpm exec wrangler
+secret put ORIGIN_SECRET`). Then:
 
 ```bash
 cd web && pnpm run deploy
@@ -135,3 +168,19 @@ Before publishing the service, set these build-time variables for the web app:
 `VITE_LEGAL_PHONE`, `VITE_LEGAL_PUBLICATION_DIRECTOR`, and
 `VITE_LEGAL_CONSUMER_MEDIATOR`. They populate `/legal` and deliberately show a
 visible placeholder when absent; do not publish with placeholders.
+
+### Sentry
+
+Errors, traces, logs, metrics and Session Replay go to the `disblock-server`
+and `disblock-web` projects of the `nvbes` organization.
+
+- Fly: `fly secrets set SENTRY_DSN=<disblock-server DSN>`. The environment
+  comes from `fly.toml` / `fly.staging.toml`, the release from the commit.
+- GitHub: secret `SENTRY_AUTH_TOKEN` (an org token able to write releases),
+  and variable `SENTRY_WEB_DSN` (the `disblock-web` DSN).
+
+Each deploy builds the web app with hidden source maps, uploads them to Sentry
+and deletes them before publishing, then records one release for both
+projects, linked to its commits, with a deploy for the target environment.
+Locally, put `SENTRY_DSN` in `.env` and `VITE_SENTRY_DSN` in `web/.env.local`.
+

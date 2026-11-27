@@ -4,29 +4,35 @@ pub const MAX_MESSAGE_LEN: usize = 2000;
 /// What a handler knows about the event that triggered it.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
-    pub user_id: u64,
-    pub user_name: &'a str,
+    pub user_id: Option<u64>,
+    pub user_name: Option<&'a str>,
     /// Roles of the member, when the event happened in a server.
     pub roles: &'a [u64],
     pub guild_id: Option<u64>,
     pub channel_id: Option<u64>,
+    /// Message ID when the event happened on a message (message, component, reaction).
+    pub message_id: Option<u64>,
     /// Slash command options as `(name, rendered value)`.
     pub options: &'a [(String, String)],
     /// Selected value(s) when triggered by a select menu.
     pub selected: Option<&'a str>,
+    /// Emoji rendered as text (`👍` or `<:name:id>`) when triggered by a reaction.
+    pub emoji: Option<&'a str>,
 }
 
 impl Context<'_> {
     /// Value of a built-in placeholder such as `user`, `option.NAME` or `selected`.
     pub(crate) fn builtin(&self, key: &str) -> Option<String> {
         match key {
-            "user" | "user.mention" => Some(format!("<@{}>", self.user_id)),
-            "user.name" => Some(self.user_name.to_owned()),
-            "user.id" => Some(self.user_id.to_string()),
+            "user" | "user.mention" => self.user_id.map(|id| format!("<@{id}>")),
+            "user.name" => self.user_name.map(str::to_owned),
+            "user.id" => self.user_id.map(|id| id.to_string()),
             "server.id" => self.guild_id.map(|id| id.to_string()),
             "channel" => self.channel_id.map(|id| format!("<#{id}>")),
             "channel.id" => self.channel_id.map(|id| id.to_string()),
+            "message.id" => self.message_id.map(|id| id.to_string()),
             "selected" => self.selected.map(str::to_owned),
+            "emoji" => self.emoji.map(str::to_owned),
             _ => {
                 let name = key.strip_prefix("option.")?;
                 Some(self.option(name).unwrap_or_default().to_owned())
@@ -89,13 +95,15 @@ mod tests {
 
     fn context(options: &[(String, String)]) -> Context<'_> {
         Context {
-            user_id: 42,
-            user_name: "ada",
+            user_id: Some(42),
+            user_name: Some("ada"),
             roles: &[],
             guild_id: Some(7),
             channel_id: Some(9),
+            message_id: Some(11),
             options,
             selected: None,
+            emoji: None,
         }
     }
 
@@ -104,12 +112,13 @@ mod tests {
         let options = [("who".to_owned(), "world".to_owned())];
         let mut ctx = context(&options);
         ctx.selected = Some("blue");
+        ctx.emoji = Some("👍");
         assert_eq!(
             render(
-                "Hi {user} ({user.name}) in {channel}, hello {option.who}! Picked {selected}",
+                "Hi {user} ({user.name}) in {channel} on {message.id}, hello {option.who}! Picked {selected} {emoji}",
                 |key| ctx.builtin(key)
             ),
-            "Hi <@42> (ada) in <#9>, hello world! Picked blue"
+            "Hi <@42> (ada) in <#9> on 11, hello world! Picked blue 👍"
         );
     }
 

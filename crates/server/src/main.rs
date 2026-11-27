@@ -5,7 +5,9 @@ mod config;
 mod crypto;
 mod error;
 mod monitoring;
+mod ratelimit;
 mod runtime;
+mod schema;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,14 +37,15 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub cipher: TokenCipher,
     pub runtime: Runtime,
+    pub limits: Arc<ratelimit::RateLimits>,
 }
 
 #[derive(Debug, Error)]
 enum StartupError {
     #[error("database: {0}")]
     Database(#[from] sqlx::Error),
-    #[error("migrations: {0}")]
-    Migrate(#[from] sqlx::migrate::MigrateError),
+    #[error(transparent)]
+    Schema(#[from] schema::SchemaError),
     #[error("http client: {0}")]
     Http(#[from] reqwest::Error),
     #[error("server: {0}")]
@@ -53,6 +56,23 @@ enum StartupError {
 
 #[tokio::main]
 async fn main() {
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("migrate") => {
+            install_tls_provider();
+            monitoring::init_tracing();
+            if let Err(error) = schema::migrate().await {
+                tracing::error!(%error, "migration failed");
+                std::process::exit(1);
+            }
+            return;
+        }
+        Some(other) => {
+            eprintln!("unknown command `{other}`: run without arguments to serve, or `migrate`");
+            std::process::exit(2);
+        }
+    }
+
     let config = match Config::from_env() {
         Ok(config) => Arc::new(config),
         Err(error) => {
@@ -60,20 +80,24 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    // Install the explicit ring provider before creating any HTTP client,
-    // including Sentry's optional Rustls transport.
-    if rustls::crypto::ring::default_provider()
-        .install_default()
-        .is_err()
-    {
-        eprintln!("disblock startup error: a TLS crypto provider was already installed");
-        std::process::exit(1);
-    }
+    install_tls_provider();
     let _sentry = monitoring::init(config.sentry.as_ref());
     monitoring::init_tracing();
 
     if let Err(error) = run(config).await {
         tracing::error!(%error, "disblock stopped");
+        std::process::exit(1);
+    }
+}
+
+/// Install the explicit ring provider before creating any TLS client
+/// (Discord, Neon, and Sentry's optional Rustls transport).
+fn install_tls_provider() {
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_err()
+    {
+        eprintln!("disblock startup error: a TLS crypto provider was already installed");
         std::process::exit(1);
     }
 }
@@ -84,7 +108,7 @@ async fn run(config: Arc<Config>) -> Result<(), StartupError> {
         .acquire_timeout(Duration::from_secs(10))
         .connect(&config.database_url)
         .await?;
-    sqlx::migrate!("../../migrations").run(&db).await?;
+    schema::ensure_up_to_date(&db).await?;
 
     let cipher = TokenCipher::new(&config.encryption_key);
     let (log, log_writer) = ExecutionLog::spawn(db.clone());
@@ -100,7 +124,9 @@ async fn run(config: Arc<Config>) -> Result<(), StartupError> {
             .build()?,
         cipher,
         runtime: runtime.clone(),
+        limits: Arc::new(ratelimit::RateLimits::new(config.origin_secret.clone())),
     };
+    tokio::spawn(forget_idle_clients(state.limits.clone()));
     let api = Router::new()
         .merge(auth::routes())
         .merge(billing::routes())
@@ -108,15 +134,28 @@ async fn run(config: Arc<Config>) -> Result<(), StartupError> {
         .route("/health", routing::get(|| async { "ok" }));
     let app = Router::new()
         .nest("/api", api)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            ratelimit::limit,
+        ))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(TraceLayer::new_for_http())
+        // One transaction per request, named after the matched route, continuing
+        // the browser's trace (sentry-trace / baggage headers).
+        .layer(sentry::integrations::tower::SentryHttpLayer::new().enable_transaction())
+        .layer(sentry::integrations::tower::NewSentryLayer::<
+            axum::extract::Request,
+        >::new_from_top())
         .with_state(state);
 
     let listener = TcpListener::bind(("0.0.0.0", config.port)).await?;
     tracing::info!(port = config.port, "listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // Close gateway connections cleanly, then flush the execution history.
     runtime.shutdown().await;
@@ -168,5 +207,14 @@ async fn cleanup(db: PgPool) {
                 tracing::error!(%error, "cleanup failed");
             }
         }
+    }
+}
+
+/// Drop rate limit state of clients that went quiet.
+async fn forget_idle_clients(limits: Arc<ratelimit::RateLimits>) {
+    let mut interval = tokio::time::interval(Duration::from_mins(5));
+    loop {
+        interval.tick().await;
+        limits.forget_idle_clients();
     }
 }
