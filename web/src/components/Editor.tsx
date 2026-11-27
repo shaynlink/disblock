@@ -17,11 +17,13 @@ import {
   GenerateError,
   type MissingIntent,
   findMissingIntents,
+  generateProgram,
   generateProgramWithMap,
   resolveErrorBlockId,
 } from "../blocks/generate.ts";
 import { buttonClass } from "../lib/styles.ts";
 import type { BotDetail, BotIntents, Program } from "../types.ts";
+import { DiscordPreview } from "./DiscordPreview.tsx";
 import { TemplateDialog } from "./TemplateDialog.tsx";
 import { Button } from "./ui.tsx";
 
@@ -36,6 +38,8 @@ type IntentsState =
   | { kind: "loading" }
   | { kind: "ready"; intents: BotIntents }
   | { kind: "error" };
+
+type PreviewState = { program: Program | null; error: string | null };
 
 const INTENT_WARNING_ID = "disblock_intent";
 const SAVE_WARNING_ID = "disblock_save";
@@ -72,6 +76,7 @@ export function Editor({
   const [intentsState, setIntentsState] = useState<IntentsState>({ kind: "loading" });
   const [missingIntents, setMissingIntents] = useState<MissingIntent[]>([]);
   const [checkingIntents, setCheckingIntents] = useState(false);
+  const [preview, setPreview] = useState<PreviewState>({ program: null, error: null });
   const [searchParams, setSearchParams] = useSearchParams();
   const [templatesOpen, setTemplatesOpen] = useState(() => searchParams.get("templates") === "1");
   const [hasCustomBlocks, setHasCustomBlocks] = useState(false);
@@ -106,6 +111,17 @@ export function Editor({
     if (saveWarningBlock.current) {
       editor.getBlockById(saveWarningBlock.current)?.setWarningText(null, SAVE_WARNING_ID);
       saveWarningBlock.current = null;
+    }
+  }, []);
+
+  const syncPreview = useCallback((editor: Blockly.WorkspaceSvg) => {
+    try {
+      setPreview({ program: generateProgram(editor), error: null });
+    } catch (error) {
+      setPreview({
+        program: null,
+        error: error instanceof Error ? error.message : "Could not generate preview.",
+      });
     }
   }, []);
 
@@ -148,6 +164,7 @@ export function Editor({
       : "";
     setDirty(!hasBlocks(saved));
     setHasCustomBlocks(hasCustomWorkspaceBlocks(editor));
+    syncPreview(editor);
 
     editor.addChangeListener((event) => {
       if (event.isUiEvent) {
@@ -167,6 +184,7 @@ export function Editor({
         setSave((current) => (current.kind === "error" ? { kind: "idle" } : current));
       }
       syncIntentWarnings(editor, latestIntents.current);
+      syncPreview(editor);
     });
 
     const resize = new ResizeObserver(() => Blockly.svgResize(editor));
@@ -206,7 +224,7 @@ export function Editor({
       trackedIntentWarnings.clear();
       saveWarningBlock.current = null;
     };
-  }, [bot.id, clearSaveWarning, syncIntentWarnings]);
+  }, [bot.id, clearSaveWarning, syncIntentWarnings, syncPreview]);
 
   const recheckIntents = useCallback(async () => {
     const editor = workspace.current;
@@ -358,12 +376,13 @@ export function Editor({
         editor.centerOnBlock(firstBlock.id);
       }
       syncIntentWarnings(editor, latestIntents.current);
+      syncPreview(editor);
       setHasCustomBlocks(hasCustomWorkspaceBlocks(editor));
       setDirty(
         JSON.stringify(Blockly.serialization.workspaces.save(editor)) !== savedSnapshot.current,
       );
     },
-    [clearSaveWarning, syncIntentWarnings],
+    [clearSaveWarning, syncIntentWarnings, syncPreview],
   );
 
   const openTemplates = () => {
@@ -453,7 +472,10 @@ export function Editor({
           </div>
         </div>
       )}
-      <div className="min-h-0 flex-1" ref={container} />
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        <div className="min-h-[560px] min-w-0 flex-1" ref={container} />
+        <DiscordPreview bot={bot} program={preview.program} error={preview.error} />
+      </div>
       <TemplateDialog
         open={templatesOpen}
         onClose={closeTemplates}
