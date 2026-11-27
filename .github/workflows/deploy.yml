@@ -55,7 +55,10 @@ jobs:
         run: |
           config=fly.staging.toml
           if [ "$TARGET" = production ]; then config=fly.toml; fi
+          # One machine only: each bot holds a single Discord gateway session,
+          # and a second machine would answer every event twice.
           flyctl deploy --remote-only --config "$config" --app "$FLY_APP" \
+            --ha=false \
             --build-arg RELEASE_VERSION="$RELEASE_VERSION"
       - name: Verify API health
         run: |
