@@ -62,8 +62,10 @@ describe("getPreviewMessages", () => {
 
 describe("previewText", () => {
   it("renders placeholders with sample Discord data", () => {
-    expect(previewText("Hi {user.name}: {option.reason} #{member:points} {selected}")).toBe(
-      "Hi SampleUser: example #42 First option",
-    );
+    expect(
+      previewText(
+        "Hi {user.name}: {option.reason} #{member:points} {selected} [{modal.topic}] -> {target}",
+      ),
+    ).toBe("Hi SampleUser: example #42 First option [Submitted text] -> @TargetUser");
   });
 });

@@ -25,16 +25,42 @@ pub enum Trigger {
         #[serde(default)]
         options: Vec<CommandOption>,
     },
+    /// A slash subcommand (optionally inside a group), merged into its parent command.
+    SlashSubcommand {
+        command: String,
+        #[serde(default)]
+        group: Option<String>,
+        subcommand: String,
+        description: String,
+        #[serde(default)]
+        options: Vec<CommandOption>,
+    },
+    /// Right-click context menu command on a Discord user.
+    UserCommand { name: String },
+    /// Right-click context menu command on a Discord message.
+    MessageCommand { name: String },
+    /// A modal dialog submitted by a user.
+    ModalSubmit { id: String },
     /// A member joins a server the bot is in.
     MemberJoin {},
     /// A member leaves a server the bot is in.
     MemberLeave {},
+    /// A member's roles or profile in a server is updated.
+    MemberUpdate {},
+    /// A member is banned from a server.
+    MemberBan {},
+    /// A user is unbanned from a server.
+    MemberUnban {},
     /// A message containing `pattern` is posted in a channel the bot can read.
     MessageContains {
         pattern: String,
         #[serde(default)]
         case_sensitive: bool,
     },
+    /// A message is edited in a channel the bot can see.
+    MessageEdit {},
+    /// A message is deleted in a channel the bot can see.
+    MessageDelete {},
     /// A reaction is added to a message in a server.
     ReactionAdd {
         #[serde(default)]
@@ -49,6 +75,19 @@ pub enum Trigger {
         #[serde(default)]
         message_id: Option<String>,
     },
+    /// A thread is created in a server.
+    ThreadCreate {},
+    /// An invite is created in a server.
+    InviteCreate {},
+    /// An AutoMod rule executes on a message or member.
+    AutoModExecution {
+        #[serde(default)]
+        rule_id: Option<String>,
+    },
+    /// A vote is added to a poll.
+    PollVoteAdd {},
+    /// A member joins, leaves, or moves in a voice channel.
+    VoiceStateUpdate {},
     /// A button on a message is clicked.
     ButtonClick { id: String },
     /// An option is chosen from a select menu on a message.
@@ -73,6 +112,17 @@ pub struct CommandOption {
     pub kind: OptionKind,
     #[serde(default)]
     pub required: bool,
+    #[serde(default)]
+    pub choices: Vec<CommandOptionChoiceSpec>,
+    #[serde(default)]
+    pub autocomplete: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandOptionChoiceSpec {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,9 +140,9 @@ pub enum OptionKind {
 }
 
 /// One step of a handler. Message contents are templates: `{user}`,
-/// `{option.NAME}`, `{selected}`, `{var:NAME}`, `{member:NAME}` and
-/// `{server:NAME}` are replaced when the step runs. Snowflake IDs are strings
-/// because JavaScript numbers cannot hold them.
+/// `{option.NAME}`, `{selected}`, `{modal.ID}`, `{target}`, `{var:NAME}`,
+/// `{member:NAME}` and `{server:NAME}` are replaced when the step runs.
+/// Snowflake IDs are strings because JavaScript numbers cannot hold them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Statement {
@@ -106,6 +156,10 @@ pub enum Statement {
         embeds: Vec<EmbedSpec>,
         #[serde(default)]
         components: Vec<ComponentRow>,
+        #[serde(default)]
+        poll: Option<PollSpec>,
+        #[serde(default)]
+        attachments: Vec<AttachmentSpec>,
     },
     SendMessage {
         channel_id: String,
@@ -115,6 +169,12 @@ pub enum Statement {
         embeds: Vec<EmbedSpec>,
         #[serde(default)]
         components: Vec<ComponentRow>,
+        #[serde(default)]
+        poll: Option<PollSpec>,
+        #[serde(default)]
+        attachments: Vec<AttachmentSpec>,
+        #[serde(default)]
+        reply_to_message_id: Option<String>,
     },
     /// Edit the message whose button or select menu was clicked.
     UpdateMessage {
@@ -124,6 +184,70 @@ pub enum Statement {
         embeds: Vec<EmbedSpec>,
         #[serde(default)]
         components: Vec<ComponentRow>,
+    },
+    /// Open a modal form as the initial response to an interaction.
+    ShowModal {
+        id: String,
+        title: String,
+        inputs: Vec<ModalInputSpec>,
+    },
+    /// Start a public thread attached to the triggering message.
+    CreateThreadFromMessage {
+        name: String,
+        #[serde(default)]
+        auto_archive_minutes: Option<u16>,
+    },
+    /// Create a standalone thread in a text or announcement channel.
+    CreateThread {
+        channel_id: String,
+        name: String,
+        #[serde(default)]
+        private: bool,
+        #[serde(default)]
+        auto_archive_minutes: Option<u16>,
+    },
+    /// Create a post (thread with starter message) in a forum or media channel.
+    CreateForumPost {
+        channel_id: String,
+        title: String,
+        #[serde(default)]
+        content: String,
+        #[serde(default)]
+        embeds: Vec<EmbedSpec>,
+    },
+    /// Make the bot join a thread.
+    JoinThread {
+        thread_id: String,
+    },
+    /// Add a member to a thread.
+    AddThreadMember {
+        thread_id: String,
+        member_id: String,
+    },
+    /// Remove a member from a thread.
+    RemoveThreadMember {
+        thread_id: String,
+        member_id: String,
+    },
+    /// Pin a message in a channel.
+    PinMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    /// Unpin a message in a channel.
+    UnpinMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    /// Crosspost (publish) an announcement channel message.
+    PublishMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    /// Delete the most recent `count` messages in a channel (2 to 100).
+    BulkDeleteMessages {
+        channel_id: String,
+        count: u8,
     },
     /// Give a role to the member who triggered the handler.
     AddRole {
@@ -230,6 +354,17 @@ pub enum CompareOp {
     Contains,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetField {
+    Id,
+    Mention,
+    Name,
+    Content,
+    AuthorId,
+    AuthorMention,
+}
+
 /// A value computed when the handler runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -254,6 +389,14 @@ pub enum Expr {
     },
     /// Value(s) chosen in a select menu trigger, empty when none.
     Selected {},
+    /// A text input value submitted in a modal trigger.
+    ModalField {
+        id: String,
+    },
+    /// Information about the right-clicked user or message in a context command.
+    Target {
+        field: TargetField,
+    },
     /// A whole number between `min` and `max`, both included.
     Random {
         min: Box<Expr>,
@@ -338,6 +481,24 @@ pub struct EmbedFieldSpec {
     pub inline: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntitySelectKind {
+    User,
+    Role,
+    Mentionable,
+    Channel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelFilter {
+    Text,
+    Voice,
+    Announcement,
+    Forum,
+}
+
 /// One action row below a message: up to 5 buttons or 1 select menu.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -356,6 +517,20 @@ pub enum ComponentRow {
         #[serde(default)]
         disabled: bool,
         options: Vec<SelectOptionSpec>,
+    },
+    EntitySelectMenu {
+        id: String,
+        kind: EntitySelectKind,
+        #[serde(default)]
+        placeholder: Option<String>,
+        #[serde(default)]
+        min_values: Option<u8>,
+        #[serde(default)]
+        max_values: Option<u8>,
+        #[serde(default)]
+        disabled: bool,
+        #[serde(default)]
+        channel_types: Vec<ChannelFilter>,
     },
 }
 
@@ -403,4 +578,65 @@ pub struct SelectOptionSpec {
     pub emoji: Option<String>,
     #[serde(default)]
     pub default: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextInputStyle {
+    #[default]
+    Short,
+    Paragraph,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModalInputSpec {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub style: TextInputStyle,
+    #[serde(default)]
+    pub placeholder: Option<String>,
+    #[serde(default = "default_true")]
+    pub required: bool,
+    #[serde(default)]
+    pub min_length: Option<u16>,
+    #[serde(default)]
+    pub max_length: Option<u16>,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+const fn default_poll_hours() -> u32 {
+    24
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PollSpec {
+    pub question: String,
+    pub answers: Vec<PollAnswerSpec>,
+    #[serde(default = "default_poll_hours")]
+    pub duration_hours: u32,
+    #[serde(default)]
+    pub allow_multiselect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PollAnswerSpec {
+    pub text: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttachmentSpec {
+    pub filename: String,
+    pub content: String,
 }

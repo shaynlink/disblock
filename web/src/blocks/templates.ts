@@ -9,6 +9,7 @@ export interface TemplateField {
   placeholder: string;
   hint: string;
   defaultValue?: string;
+  kind?: "channel" | "role";
 }
 
 export interface TemplateBlockState {
@@ -141,12 +142,14 @@ export const BOT_TEMPLATES: BotTemplate[] = [
         label: "Welcome channel ID",
         placeholder: "Right-click a channel in Discord → Copy Channel ID",
         hint: "Used for welcome and goodbye messages.",
+        kind: "channel",
       },
       {
         key: "roleId",
         label: "Starter role ID",
         placeholder: "Server Settings → Roles → Copy Role ID",
         hint: "Automatically assigned when someone joins.",
+        kind: "role",
       },
     ],
     build(values) {
@@ -236,6 +239,7 @@ export const BOT_TEMPLATES: BotTemplate[] = [
         label: "Level-up announcements channel ID",
         placeholder: "Channel ID for level-up shoutouts",
         hint: "Receives a message whenever a member levels up.",
+        kind: "channel",
       },
     ],
     build(values) {
@@ -482,6 +486,7 @@ export const BOT_TEMPLATES: BotTemplate[] = [
         label: "Role ID to toggle",
         placeholder: "Role ID given/removed when reacting",
         hint: "Make sure the bot's role sits above this role in Server Settings.",
+        kind: "role",
       },
       {
         key: "emoji",
@@ -576,12 +581,14 @@ export const BOT_TEMPLATES: BotTemplate[] = [
         label: "Moderator role ID",
         placeholder: "Only members with this role can run mod commands",
         hint: "Checked with `has role` on every moderation command.",
+        kind: "role",
       },
       {
         key: "logChannelId",
         label: "Mod log channel ID",
         placeholder: "Channel ID for moderation audit logs",
         hint: "Receives rich embed logs for every warning, mute, kick, and auto-delete.",
+        kind: "channel",
       },
       {
         key: "blockedWord",
@@ -878,12 +885,14 @@ export const BOT_TEMPLATES: BotTemplate[] = [
         label: "Staff queue channel ID",
         placeholder: "Private staff channel ID where new tickets appear",
         hint: "Receives ticket cards with Claim and Close buttons.",
+        kind: "channel",
       },
       {
         key: "staffRoleId",
         label: "Staff role ID",
         placeholder: "Role ID allowed to claim/close tickets",
         hint: "Checked when clicking Claim or Close, and when posting `/ticket-panel`.",
+        kind: "role",
       },
     ],
     build(values) {

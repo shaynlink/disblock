@@ -1,8 +1,25 @@
-import { ChevronDown, Eye, Image as ImageIcon, Lock, MessageSquare } from "lucide-react";
+import {
+  ChevronDown,
+  Eye,
+  FileText,
+  Image as ImageIcon,
+  Lock,
+  MessageSquare,
+  Vote,
+} from "lucide-react";
 import { avatarUrl } from "../api.ts";
 import { getPreviewMessages, previewText, type PreviewMessage } from "../blocks/preview.ts";
 import { cn } from "../lib/styles.ts";
-import type { Bot as BotRecord, ButtonSpec, ComponentRow, Embed, Program } from "../types.ts";
+import type {
+  AttachmentSpec,
+  Bot as BotRecord,
+  ButtonSpec,
+  ComponentRow,
+  Embed,
+  ModalInputSpec,
+  PollSpec,
+  Program,
+} from "../types.ts";
 
 const BUTTON_STYLES: Record<Extract<ButtonSpec, { type: "action" }>["style"], string> = {
   primary: "bg-[#5865f2] hover:bg-[#4752c4]",
@@ -109,6 +126,21 @@ function ButtonPreview({ button }: { button: ButtonSpec }) {
   );
 }
 
+function entityDefaultPlaceholder(kind: string): string {
+  switch (kind) {
+    case "user":
+      return "Select member(s)";
+    case "role":
+      return "Select role(s)";
+    case "mentionable":
+      return "Select member(s) or role(s)";
+    case "channel":
+      return "Select channel(s)";
+    default:
+      return "Select an option";
+  }
+}
+
 function ComponentsPreview({ components }: { components: ComponentRow[] }) {
   return (
     <div className="mt-2 flex flex-col items-start gap-1.5">
@@ -128,11 +160,89 @@ function ComponentsPreview({ components }: { components: ComponentRow[] }) {
               row.disabled && "opacity-40",
             )}
           >
-            <span>{previewText(row.placeholder || "Select an option")}</span>
+            <span>
+              {previewText(
+                row.placeholder ||
+                  (row.type === "entity_select_menu"
+                    ? entityDefaultPlaceholder(row.kind)
+                    : "Select an option"),
+              )}
+            </span>
             <ChevronDown className="size-4" aria-hidden="true" />
           </div>
         ),
       )}
+    </div>
+  );
+}
+
+function PollPreview({ poll }: { poll: PollSpec }) {
+  return (
+    <div className="mt-2.5 rounded-lg border border-white/10 bg-[#2b2d31] p-3">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+        <Vote className="size-3.5 text-[#b5bac1]" aria-hidden="true" />
+        <span>{previewText(poll.question || "Poll")}</span>
+      </div>
+      <div className="mt-2 space-y-1.5">
+        {poll.answers.map((answer, idx) => (
+          <div
+            key={idx}
+            className="flex items-center gap-2 rounded border border-white/10 bg-[#1e1f22] px-2.5 py-1.5 text-xs text-[#dbdee1]"
+          >
+            {answer.emoji && <span>{answer.emoji}</span>}
+            <span>{previewText(answer.text)}</span>
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-[#949ba4]">
+        {poll.allow_multiselect ? "Multiple choices allowed" : "Single choice"} •{" "}
+        {poll.duration_hours}h
+      </p>
+    </div>
+  );
+}
+
+function AttachmentsPreview({ attachments }: { attachments: AttachmentSpec[] }) {
+  return (
+    <div className="mt-2 space-y-1.5">
+      {attachments.map((file, idx) => (
+        <div
+          key={idx}
+          className="flex items-center gap-2 rounded border border-white/10 bg-[#2b2d31] px-3 py-2 text-xs text-[#dbdee1]"
+        >
+          <FileText className="size-4 shrink-0 text-[#949ba4]" aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate font-medium text-[#00a8fc]">{file.filename || "file.txt"}</p>
+            <p className="truncate text-[11px] text-[#949ba4]">{previewText(file.content)}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ModalPreview({ modal }: { modal: { title: string; inputs: ModalInputSpec[] } }) {
+  return (
+    <div className="mt-2 rounded-lg border border-white/15 bg-[#313338] p-3">
+      <p className="text-sm font-semibold text-white">{previewText(modal.title || "Modal")}</p>
+      <div className="mt-2.5 space-y-2.5">
+        {modal.inputs.map((input, idx) => (
+          <div key={idx}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-[#b5bac1]">
+              {previewText(input.label || "Field")}
+              {input.required && <span className="ml-0.5 text-[#f23f43]">*</span>}
+            </p>
+            <div
+              className={cn(
+                "mt-1 rounded border border-black/30 bg-[#1e1f22] px-2.5 py-1.5 text-xs text-[#949ba4]",
+                input.style === "paragraph" && "min-h-12",
+              )}
+            >
+              {previewText(input.value || input.placeholder || "User types here…")}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -173,7 +283,12 @@ function MessagePreview({ message, bot }: { message: PreviewMessage; bot: BotRec
           {message.embeds?.map((embed, index) => (
             <EmbedPreview key={index} embed={embed} />
           ))}
+          {message.poll && <PollPreview poll={message.poll} />}
+          {message.attachments && message.attachments.length > 0 && (
+            <AttachmentsPreview attachments={message.attachments} />
+          )}
           {message.components && <ComponentsPreview components={message.components} />}
+          {message.modal && <ModalPreview modal={message.modal} />}
         </div>
       </div>
     </article>
@@ -220,7 +335,7 @@ export function DiscordPreview({
         ) : messages.length === 0 ? (
           <div className="flex min-h-48 flex-col items-center justify-center px-6 text-center text-sm text-[#b5bac1]">
             <MessageSquare className="mb-3 size-7" aria-hidden="true" />
-            Add a reply, message, or direct-message block to see it here.
+            Add a reply, message, modal, or direct-message block to see it here.
           </div>
         ) : (
           messages.map((message, index) => (
@@ -230,7 +345,7 @@ export function DiscordPreview({
       </div>
       <p className="flex items-center gap-2 border-t border-white/10 px-4 py-2.5 text-[11px] text-[#949ba4]">
         <ImageIcon className="size-3.5" aria-hidden="true" />
-        Preview only — buttons and menus are not interactive.
+        Preview only — buttons, menus, and modals are not interactive.
       </p>
     </aside>
   );

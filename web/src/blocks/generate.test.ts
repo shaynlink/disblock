@@ -923,4 +923,277 @@ describe("editor validation mapping and intents", () => {
     expect(resolveErrorBlockId(map, { handler: 1 })).toBe("trig_react_add");
     expect(resolveErrorBlockId(map, { handler: 3 })).toBe("trig_sched");
   });
+
+  it("generates subcommands, context commands, modals, entity selects, polls, files, threads, and advanced events", () => {
+    const workspace = workspaceFrom({
+      blocks: {
+        languageVersion: 0,
+        blocks: [
+          {
+            type: "slash_subcommand",
+            x: 0,
+            y: 0,
+            fields: {
+              COMMAND: "admin",
+              GROUP: "user",
+              SUBCOMMAND: "warn",
+              DESCRIPTION: "Warn a user",
+            },
+            inputs: {
+              OPTIONS: {
+                block: {
+                  type: "command_option",
+                  fields: {
+                    NAME: "level",
+                    KIND: "string",
+                    REQUIRED: true,
+                    DESCRIPTION: "Severity",
+                    AUTOCOMPLETE: "",
+                  },
+                  inputs: {
+                    CHOICES: {
+                      block: {
+                        type: "command_option_choice",
+                        fields: { NAME: "Low", VALUE: "low" },
+                      },
+                    },
+                  },
+                },
+              },
+              ACTIONS: {
+                block: {
+                  type: "show_modal",
+                  fields: { ID: "warn_form", TITLE: "Warn details" },
+                  inputs: {
+                    INPUTS: {
+                      block: {
+                        type: "modal_text_input",
+                        fields: {
+                          ID: "reason",
+                          LABEL: "Reason",
+                          STYLE: "paragraph",
+                          PLACEHOLDER: "Why?",
+                          VALUE: "",
+                          REQUIRED: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "modal_submit",
+            x: 0,
+            y: 250,
+            fields: { ID: "warn_form" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "variable_set",
+                  fields: { SCOPE: "local", NAME: "r" },
+                  inputs: {
+                    VALUE: { block: { type: "value_modal_field", fields: { ID: "reason" } } },
+                  },
+                  next: {
+                    block: {
+                      type: "reply_rich",
+                      fields: { CONTENT: "Logged", EPHEMERAL: true },
+                      inputs: {
+                        COMPONENTS: {
+                          block: {
+                            type: "component_entity_select_menu",
+                            fields: {
+                              KIND: "channel",
+                              ID: "target_ch",
+                              PLACEHOLDER: "Pick channel",
+                              CHANNEL_FILTER: "text",
+                              MIN: 1,
+                              MAX: 1,
+                              DISABLED: false,
+                            },
+                          },
+                        },
+                        POLL: {
+                          block: {
+                            type: "message_poll",
+                            fields: { QUESTION: "Escalate?", DURATION: 24, MULTISELECT: false },
+                            inputs: {
+                              ANSWERS: {
+                                block: {
+                                  type: "poll_answer",
+                                  fields: { TEXT: "Yes", EMOJI: "👍" },
+                                },
+                              },
+                            },
+                          },
+                        },
+                        ATTACHMENTS: {
+                          block: {
+                            type: "message_attachment",
+                            fields: { FILENAME: "warn.txt", CONTENT: "{modal.reason}" },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "user_command",
+            x: 0,
+            y: 500,
+            fields: { NAME: "Inspect" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "variable_set",
+                  fields: { SCOPE: "local", NAME: "t" },
+                  inputs: {
+                    VALUE: { block: { type: "value_target", fields: { FIELD: "id" } } },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "message_command",
+            x: 0,
+            y: 650,
+            fields: { NAME: "Thread It" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "create_thread_from_message",
+                  fields: { NAME: "Topic", ARCHIVE: "1440" },
+                  next: {
+                    block: {
+                      type: "pin_message",
+                      fields: { MESSAGE_ID: "{target.id}", CHANNEL_ID: "{channel.id}" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          {
+            type: "automod_execution",
+            x: 0,
+            y: 800,
+            fields: { RULE_ID: "" },
+            inputs: {
+              ACTIONS: {
+                block: {
+                  type: "bulk_delete_messages",
+                  fields: { COUNT: 5, CHANNEL_ID: "{channel.id}" },
+                },
+              },
+            },
+          },
+          {
+            type: "member_update",
+            id: "upd_blk",
+            x: 0,
+            y: 950,
+          },
+          {
+            type: "message_edit",
+            id: "edit_blk",
+            x: 0,
+            y: 1050,
+          },
+        ],
+      },
+    });
+
+    const program = generateProgram(workspace);
+    expect(program.handlers[0]).toEqual({
+      trigger: {
+        type: "slash_subcommand",
+        command: "admin",
+        group: "user",
+        subcommand: "warn",
+        description: "Warn a user",
+        options: [
+          {
+            name: "level",
+            description: "Severity",
+            kind: "string",
+            required: true,
+            choices: [{ name: "Low", value: "low" }],
+          },
+        ],
+      },
+      actions: [
+        {
+          type: "show_modal",
+          id: "warn_form",
+          title: "Warn details",
+          inputs: [
+            {
+              id: "reason",
+              label: "Reason",
+              style: "paragraph",
+              placeholder: "Why?",
+              required: true,
+            },
+          ],
+        },
+      ],
+    });
+    expect(program.handlers[1].trigger).toEqual({ type: "modal_submit", id: "warn_form" });
+    expect(program.handlers[1].actions[1]).toEqual({
+      type: "reply",
+      content: "Logged",
+      ephemeral: true,
+      components: [
+        {
+          type: "entity_select_menu",
+          id: "target_ch",
+          kind: "channel",
+          placeholder: "Pick channel",
+          min_values: 1,
+          max_values: 1,
+          disabled: false,
+          channel_types: ["text"],
+        },
+      ],
+      poll: {
+        question: "Escalate?",
+        answers: [{ text: "Yes", emoji: "👍" }],
+        duration_hours: 24,
+        allow_multiselect: false,
+      },
+      attachments: [{ filename: "warn.txt", content: "{modal.reason}" }],
+    });
+    expect(program.handlers[2].trigger).toEqual({ type: "user_command", name: "Inspect" });
+    expect(program.handlers[3].actions).toEqual([
+      { type: "create_thread_from_message", name: "Topic", auto_archive_minutes: 1440 },
+      { type: "pin_message", channel_id: "{channel.id}", message_id: "{target.id}" },
+    ]);
+    expect(program.handlers[4]).toEqual({
+      trigger: { type: "automod_execution" },
+      actions: [{ type: "bulk_delete_messages", channel_id: "{channel.id}", count: 5 }],
+    });
+
+    expect(findMissingIntents(workspace, { members: false, message_content: false })).toEqual([
+      {
+        intent: "members",
+        label: "Server Members Intent",
+        blockId: "upd_blk",
+        message:
+          "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving.",
+      },
+      {
+        intent: "message_content",
+        label: "Message Content Intent",
+        blockId: "edit_blk",
+        message:
+          "Message Content Intent is disabled in the Discord developer portal. Enable it under Bot before saving.",
+      },
+    ]);
+  });
 });

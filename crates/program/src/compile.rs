@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::model::{
-    ButtonSpec, ButtonStyle, CommandOption, CompareOp, ComponentRow, EmbedFieldSpec, EmbedSpec,
-    Expr, Handler, MathOp, Program, ScheduleUnit, Scope, SelectOptionSpec, Statement, Trigger,
+    AttachmentSpec, ButtonSpec, ButtonStyle, ChannelFilter, CommandOption, CommandOptionChoiceSpec,
+    CompareOp, ComponentRow, EmbedFieldSpec, EmbedSpec, EntitySelectKind, Expr, Handler, MathOp,
+    ModalInputSpec, OptionKind, PollSpec, Program, ScheduleUnit, Scope, SelectOptionSpec,
+    Statement, TargetField, TextInputStyle, Trigger,
 };
 use crate::run::EmojiRef;
 use crate::template::MAX_MESSAGE_LEN;
@@ -13,8 +15,11 @@ use crate::template::MAX_MESSAGE_LEN;
 const MAX_HANDLERS: usize = 200;
 /// Discord allows 100 global chat input commands per application.
 const MAX_COMMANDS: usize = 100;
+/// Discord allows 5 global user and 5 global message context commands each.
+const MAX_CONTEXT_COMMANDS: usize = 5;
 const MAX_SCHEDULES: usize = 20;
 const MAX_OPTIONS: usize = 25;
+const MAX_CHOICES: usize = 25;
 /// Statements in one handler, branches included.
 const MAX_STEPS: usize = 100;
 /// Nesting of `if` blocks.
@@ -29,7 +34,7 @@ pub(crate) const MAX_WAIT_SECONDS: u32 = 300;
 pub(crate) const MAX_TIMEOUT_SECONDS: u32 = 28 * 24 * 60 * 60;
 /// Scheduled triggers run at most once every 30 days.
 const MAX_SCHEDULE_SECONDS: u32 = 30 * 24 * 60 * 60;
-const MAX_MEMBER_ID_TEMPLATE_LEN: usize = 100;
+const MAX_ID_TEMPLATE_LEN: usize = 100;
 const MAX_AUDIT_REASON_LEN: usize = 512;
 const MAX_CUSTOM_ID_LEN: usize = 100;
 const MAX_EMBEDS: usize = 10;
@@ -51,6 +56,19 @@ const MAX_SELECT_OPTIONS: usize = 25;
 pub(crate) const MAX_SELECT_OPTION_LABEL_LEN: usize = 100;
 const MAX_SELECT_OPTION_VALUE_LEN: usize = 100;
 pub(crate) const MAX_SELECT_OPTION_DESCRIPTION_LEN: usize = 100;
+const MAX_MODAL_INPUTS: usize = 5;
+pub(crate) const MAX_MODAL_TITLE_LEN: usize = 45;
+pub(crate) const MAX_MODAL_LABEL_LEN: usize = 45;
+pub(crate) const MAX_MODAL_PLACEHOLDER_LEN: usize = 100;
+pub(crate) const MAX_MODAL_VALUE_LEN: usize = 4000;
+const MAX_POLL_ANSWERS: usize = 10;
+pub(crate) const MAX_POLL_QUESTION_LEN: usize = 300;
+pub(crate) const MAX_POLL_ANSWER_LEN: usize = 55;
+const MAX_POLL_HOURS: u32 = 768;
+const MAX_ATTACHMENTS: usize = 10;
+const MAX_ATTACHMENT_FILENAME_LEN: usize = 100;
+pub(crate) const MAX_ATTACHMENT_CONTENT_LEN: usize = 50_000;
+pub(crate) const MAX_THREAD_NAME_LEN: usize = 100;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CompileError {
@@ -58,6 +76,8 @@ pub enum CompileError {
     TooManyHandlers,
     #[error("a bot can have at most {MAX_COMMANDS} slash commands")]
     TooManyCommands,
+    #[error("a bot can have at most {MAX_CONTEXT_COMMANDS} {0} menu commands")]
+    TooManyContextCommands(&'static str),
     #[error("a bot can have at most {MAX_SCHEDULES} scheduled triggers")]
     TooManySchedules,
     #[error("trigger #{}: {reason}", .handler + 1)]
@@ -160,14 +180,28 @@ pub struct ComponentLocation {
 pub enum HandlerError {
     #[error("`{0}` is not a valid name: use 1-32 lowercase letters, digits, `-` or `_`")]
     InvalidName(String),
+    #[error("menu command name must be 1-32 non-empty characters")]
+    InvalidContextName,
     #[error("command `/{0}` is defined twice")]
     DuplicateCommand(String),
+    #[error("subcommand `/{0}` is defined twice")]
+    DuplicateSubcommand(String),
+    #[error("command `/{0}` cannot mix top-level actions and subcommands")]
+    MixedSubcommands(String),
+    #[error("subcommand group or name `{0}` conflicts on `/{1}`")]
+    ConflictingSubcommandGroup(String, String),
+    #[error("a slash command can have at most {MAX_OPTIONS} subcommands or groups")]
+    TooManySubcommands,
+    #[error("{0} menu command `{1}` is defined twice")]
+    DuplicateContextCommand(&'static str, String),
     #[error("`{0}` is not a valid component ID: use 1-{MAX_CUSTOM_ID_LEN} characters")]
     InvalidComponentId(String),
     #[error("button `{0}` is defined twice")]
     DuplicateButton(String),
     #[error("select menu `{0}` is defined twice")]
     DuplicateSelectMenu(String),
+    #[error("modal `{0}` is defined twice")]
+    DuplicateModal(String),
     #[error("descriptions must be 1-100 characters")]
     InvalidDescription,
     #[error("a command can have at most {MAX_OPTIONS} options")]
@@ -176,12 +210,22 @@ pub enum HandlerError {
     DuplicateOption(String),
     #[error("required option `{0}` must come before the optional ones")]
     RequiredAfterOptional(String),
+    #[error("option `{0}` supports choices only for text, integer, or decimal options")]
+    ChoicesUnsupported(String),
+    #[error("option `{0}` can have at most {MAX_CHOICES} choices")]
+    TooManyChoices(String),
+    #[error("option `{0}` cannot use both fixed choices and autocomplete suggestions")]
+    ChoicesAndAutocompleteConflict(String),
+    #[error("option `{0}` has an invalid choice `{1}`")]
+    InvalidChoice(String, String),
     #[error("the searched text must be 1-{MAX_PATTERN_LEN} characters")]
     InvalidPattern,
     #[error("`{0}` is not a unicode emoji or a custom emoji written `name:id`")]
     InvalidEmoji(String),
     #[error("`{0}` is not a valid Discord message ID")]
     InvalidMessageId(String),
+    #[error("`{0}` is not a valid AutoMod rule ID")]
+    InvalidRuleId(String),
     #[error("scheduled triggers must run every 1 minute to 30 days")]
     InvalidSchedule,
     #[error("a trigger needs at least one action")]
@@ -196,7 +240,7 @@ pub enum HandlerError {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StepError {
-    #[error("messages must have text or an embed")]
+    #[error("messages must have text, an embed, a poll, or an attachment")]
     EmptyMessage,
     #[error("an update needs text, an embed, or at least one component")]
     EmptyUpdate,
@@ -213,6 +257,8 @@ pub enum StepError {
         action: &'static str,
         trigger: &'static str,
     },
+    #[error("opening a modal must happen before replying, updating, or waiting")]
+    ModalNotFirstResponse,
     #[error("`{0}` is not a valid variable name: use 1-32 lowercase letters, digits or `_`")]
     InvalidVariableName(String),
     #[error("this command has no option named `{0}`")]
@@ -257,6 +303,24 @@ pub enum StepError {
     DuplicateSelectValue(String),
     #[error("more select options are marked default than the max choices allowed")]
     TooManyDefaultOptions,
+    #[error("a modal needs 1 to {MAX_MODAL_INPUTS} text inputs")]
+    InvalidModalInputCount,
+    #[error("modal text input `{0}` min length ({1}) cannot exceed max length ({2})")]
+    InvalidModalInputBounds(String, u16, u16),
+    #[error("modal input ID `{0}` is used more than once in this modal")]
+    DuplicateModalInputId(String),
+    #[error("a poll needs 1 to {MAX_POLL_ANSWERS} answers")]
+    InvalidPollAnswerCount,
+    #[error("poll duration must be 1 to {MAX_POLL_HOURS} hours")]
+    InvalidPollDuration,
+    #[error("a message can have at most {MAX_ATTACHMENTS} attachments")]
+    TooManyAttachments,
+    #[error("`{0}` is not a valid attachment filename")]
+    InvalidFilename(String),
+    #[error("auto-archive duration must be 60, 1440, 4320, or 10080 minutes")]
+    InvalidArchiveDuration,
+    #[error("bulk delete count must be between 2 and 100")]
+    InvalidBulkDeleteCount,
 }
 
 /// A slash command to register on Discord.
@@ -265,6 +329,34 @@ pub struct SlashCommandSpec {
     pub name: String,
     pub description: String,
     pub options: Vec<CommandOption>,
+    pub subcommands: Vec<SlashSubcommandSpec>,
+    pub groups: Vec<SlashSubcommandGroupSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashSubcommandSpec {
+    pub name: String,
+    pub description: String,
+    pub options: Vec<CommandOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashSubcommandGroupSpec {
+    pub name: String,
+    pub description: String,
+    pub subcommands: Vec<SlashSubcommandSpec>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextCommandKind {
+    User,
+    Message,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextCommandSpec {
+    pub name: String,
+    pub kind: ContextCommandKind,
 }
 
 /// A scheduled trigger to tick periodically while the bot is online.
@@ -290,12 +382,24 @@ impl ScheduleSpec {
 /// What the gateway connection must subscribe to for a program to work.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct GatewayNeeds {
-    /// Member join and leave events (privileged `GUILD_MEMBERS` intent).
+    /// Member join, leave, and update events (privileged `GUILD_MEMBERS` intent).
     pub members: bool,
-    /// Message events with their content (privileged `MESSAGE_CONTENT` intent).
+    /// Message content triggers (privileged `MESSAGE_CONTENT` intent).
     pub messages: bool,
+    /// Non-content message events like message delete (`GUILD_MESSAGES` intent).
+    pub message_events: bool,
     /// Message reaction add and remove events (`GUILD_MESSAGE_REACTIONS` intent).
     pub reactions: bool,
+    /// Ban add and remove events (`GUILD_MODERATION` intent).
+    pub moderation: bool,
+    /// Invite create events (`GUILD_INVITES` intent).
+    pub invites: bool,
+    /// Voice state update events (`GUILD_VOICE_STATES` intent).
+    pub voice_states: bool,
+    /// AutoMod execution events (`AUTO_MODERATION_EXECUTION` intent).
+    pub automod: bool,
+    /// Poll vote add events (`GUILD_MESSAGE_POLLS` intent).
+    pub polls: bool,
 }
 
 /// A checked statement: IDs parsed, names validated.
@@ -306,14 +410,63 @@ pub(crate) enum Step {
         ephemeral: bool,
     },
     SendMessage {
-        channel_id: u64,
+        channel_id: String,
         message: CompiledMessage,
+        reply_to_message_id: Option<String>,
     },
     UpdateMessage {
         message: CompiledMessage,
     },
-    AddRole(u64),
-    RemoveRole(u64),
+    ShowModal {
+        id: String,
+        title: String,
+        inputs: Vec<CompiledModalInput>,
+    },
+    CreateThreadFromMessage {
+        name: String,
+        auto_archive_minutes: Option<u16>,
+    },
+    CreateThread {
+        channel_id: String,
+        name: String,
+        private: bool,
+        auto_archive_minutes: Option<u16>,
+    },
+    CreateForumPost {
+        channel_id: String,
+        title: String,
+        content: Option<String>,
+        embeds: Vec<CompiledEmbed>,
+    },
+    JoinThread {
+        thread_id: String,
+    },
+    AddThreadMember {
+        thread_id: String,
+        member_id: String,
+    },
+    RemoveThreadMember {
+        thread_id: String,
+        member_id: String,
+    },
+    PinMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    UnpinMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    PublishMessage {
+        channel_id: String,
+        message_id: String,
+    },
+    BulkDeleteMessages {
+        channel_id: String,
+        count: u8,
+    },
+    AddRole(String),
+    RemoveRole(String),
     Timeout {
         member_id: String,
         seconds: u32,
@@ -357,6 +510,40 @@ pub(crate) struct CompiledMessage {
     pub(crate) content: Option<String>,
     pub(crate) embeds: Vec<CompiledEmbed>,
     pub(crate) components: Vec<CompiledComponentRow>,
+    pub(crate) poll: Option<CompiledPoll>,
+    pub(crate) attachments: Vec<CompiledAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledPoll {
+    pub(crate) question: String,
+    pub(crate) answers: Vec<CompiledPollAnswer>,
+    pub(crate) duration_hours: u32,
+    pub(crate) allow_multiselect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledPollAnswer {
+    pub(crate) text: String,
+    pub(crate) emoji: Option<EmojiRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledAttachment {
+    pub(crate) filename: String,
+    pub(crate) content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledModalInput {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) style: TextInputStyle,
+    pub(crate) placeholder: Option<String>,
+    pub(crate) required: bool,
+    pub(crate) min_length: Option<u16>,
+    pub(crate) max_length: Option<u16>,
+    pub(crate) value: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,6 +591,15 @@ pub(crate) enum CompiledComponentRow {
         disabled: bool,
         options: Vec<CompiledSelectOption>,
     },
+    EntitySelectMenu {
+        id: String,
+        kind: EntitySelectKind,
+        placeholder: Option<String>,
+        min_values: u8,
+        max_values: u8,
+        disabled: bool,
+        channel_types: Vec<ChannelFilter>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,6 +637,8 @@ pub(crate) enum Calc {
     Variable(Scope, String),
     Option(String),
     Selected,
+    ModalField(String),
+    Target(TargetField),
     Random(Box<Calc>, Box<Calc>),
     Math(MathOp, Box<Calc>, Box<Calc>),
     Compare(CompareOp, Box<Calc>, Box<Calc>),
@@ -472,6 +670,12 @@ pub(crate) struct ReactionMatcher {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AutoModMatcher {
+    pub(crate) rule_id: Option<u64>,
+    pub(crate) handler: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ScheduleEntry {
     pub(crate) spec: ScheduleSpec,
     pub(crate) handler: usize,
@@ -482,12 +686,27 @@ pub(crate) struct ScheduleEntry {
 pub struct CompiledProgram {
     pub(crate) handlers: Vec<CompiledHandler>,
     pub(crate) commands: Vec<SlashCommandSpec>,
+    pub(crate) context_commands: Vec<ContextCommandSpec>,
     pub(crate) slash: HashMap<String, usize>,
+    pub(crate) subcommands: HashMap<(String, Option<String>, String), usize>,
+    pub(crate) user_commands: HashMap<String, usize>,
+    pub(crate) message_commands: HashMap<String, usize>,
+    pub(crate) modals: HashMap<String, usize>,
     pub(crate) member_join: Vec<usize>,
     pub(crate) member_leave: Vec<usize>,
+    pub(crate) member_update: Vec<usize>,
+    pub(crate) member_ban: Vec<usize>,
+    pub(crate) member_unban: Vec<usize>,
     pub(crate) messages: Vec<MessageMatcher>,
+    pub(crate) message_edit: Vec<usize>,
+    pub(crate) message_delete: Vec<usize>,
     pub(crate) reaction_add: Vec<ReactionMatcher>,
     pub(crate) reaction_remove: Vec<ReactionMatcher>,
+    pub(crate) thread_create: Vec<usize>,
+    pub(crate) invite_create: Vec<usize>,
+    pub(crate) automod_execution: Vec<AutoModMatcher>,
+    pub(crate) poll_vote_add: Vec<usize>,
+    pub(crate) voice_state_update: Vec<usize>,
     pub(crate) buttons: HashMap<String, usize>,
     pub(crate) selects: HashMap<String, usize>,
     pub(crate) schedules: Vec<ScheduleEntry>,
@@ -500,6 +719,45 @@ impl CompiledProgram {
     #[must_use]
     pub fn commands(&self) -> &[SlashCommandSpec] {
         &self.commands
+    }
+
+    /// Context menu commands (user and message) to register, in program order.
+    #[must_use]
+    pub fn context_commands(&self) -> &[ContextCommandSpec] {
+        &self.context_commands
+    }
+
+    /// Find autocomplete suggestions configured for an option on a slash command or subcommand.
+    #[must_use]
+    pub fn autocomplete_choices(
+        &self,
+        command: &str,
+        group: Option<&str>,
+        subcommand: Option<&str>,
+        option_name: &str,
+    ) -> &[String] {
+        let Some(cmd) = self.commands.iter().find(|spec| spec.name == command) else {
+            return &[];
+        };
+        let options = match (group, subcommand) {
+            (None, None) => cmd.options.as_slice(),
+            (None, Some(sub)) => cmd
+                .subcommands
+                .iter()
+                .find(|item| item.name == sub)
+                .map_or(&[][..], |item| item.options.as_slice()),
+            (Some(grp), Some(sub)) => cmd
+                .groups
+                .iter()
+                .find(|item| item.name == grp)
+                .and_then(|item| item.subcommands.iter().find(|entry| entry.name == sub))
+                .map_or(&[][..], |entry| entry.options.as_slice()),
+            (Some(_), None) => &[],
+        };
+        options
+            .iter()
+            .find(|option| option.name == option_name)
+            .map_or(&[][..], |option| option.autocomplete.as_slice())
     }
 
     /// Distinct scheduled intervals needed by the program, in handler order.
@@ -517,9 +775,17 @@ impl CompiledProgram {
     #[must_use]
     pub fn gateway_needs(&self) -> GatewayNeeds {
         GatewayNeeds {
-            members: !self.member_join.is_empty() || !self.member_leave.is_empty(),
-            messages: !self.messages.is_empty(),
+            members: !self.member_join.is_empty()
+                || !self.member_leave.is_empty()
+                || !self.member_update.is_empty(),
+            messages: !self.messages.is_empty() || !self.message_edit.is_empty(),
+            message_events: !self.message_delete.is_empty(),
             reactions: !self.reaction_add.is_empty() || !self.reaction_remove.is_empty(),
+            moderation: !self.member_ban.is_empty() || !self.member_unban.is_empty(),
+            invites: !self.invite_create.is_empty(),
+            voice_states: !self.voice_state_update.is_empty(),
+            automod: !self.automod_execution.is_empty(),
+            polls: !self.poll_vote_add.is_empty(),
         }
     }
 
@@ -540,11 +806,25 @@ impl CompiledProgram {
 #[derive(Clone, Copy)]
 enum TriggerKind {
     Slash,
+    SlashSubcommand,
+    UserCommand,
+    MessageCommand,
+    ModalSubmit,
     MemberJoin,
     MemberLeave,
+    MemberUpdate,
+    MemberBan,
+    MemberUnban,
     Message,
+    MessageEdit,
+    MessageDelete,
     ReactionAdd,
     ReactionRemove,
+    ThreadCreate,
+    InviteCreate,
+    AutoModExecution,
+    PollVoteAdd,
+    VoiceStateUpdate,
     ButtonClick,
     SelectMenu,
     Schedule,
@@ -553,12 +833,25 @@ enum TriggerKind {
 impl TriggerKind {
     const fn name(self) -> &'static str {
         match self {
-            Self::Slash => "slash command",
+            Self::Slash | Self::SlashSubcommand => "slash command",
+            Self::UserCommand => "user menu command",
+            Self::MessageCommand => "message menu command",
+            Self::ModalSubmit => "modal submit",
             Self::MemberJoin => "member join",
             Self::MemberLeave => "member leave",
+            Self::MemberUpdate => "member update",
+            Self::MemberBan => "member ban",
+            Self::MemberUnban => "member unban",
             Self::Message => "message contains",
+            Self::MessageEdit => "message edited",
+            Self::MessageDelete => "message deleted",
             Self::ReactionAdd => "reaction added",
             Self::ReactionRemove => "reaction removed",
+            Self::ThreadCreate => "thread created",
+            Self::InviteCreate => "invite created",
+            Self::AutoModExecution => "AutoMod execution",
+            Self::PollVoteAdd => "poll vote added",
+            Self::VoiceStateUpdate => "voice state update",
             Self::ButtonClick => "button click",
             Self::SelectMenu => "select menu",
             Self::Schedule => "scheduled task",
@@ -566,11 +859,42 @@ impl TriggerKind {
     }
 
     const fn is_interaction(self) -> bool {
-        matches!(self, Self::Slash | Self::ButtonClick | Self::SelectMenu)
+        matches!(
+            self,
+            Self::Slash
+                | Self::SlashSubcommand
+                | Self::UserCommand
+                | Self::MessageCommand
+                | Self::ModalSubmit
+                | Self::ButtonClick
+                | Self::SelectMenu
+        )
     }
 
     const fn is_component(self) -> bool {
         matches!(self, Self::ButtonClick | Self::SelectMenu)
+    }
+
+    const fn can_open_modal(self) -> bool {
+        self.is_interaction() && !matches!(self, Self::ModalSubmit)
+    }
+
+    const fn has_message(self) -> bool {
+        matches!(
+            self,
+            Self::Message
+                | Self::MessageEdit
+                | Self::MessageCommand
+                | Self::ReactionAdd
+                | Self::ReactionRemove
+        )
+    }
+
+    const fn has_member(self) -> bool {
+        !matches!(
+            self,
+            Self::MemberLeave | Self::MemberUnban | Self::MessageDelete | Self::Schedule
+        )
     }
 }
 
@@ -599,15 +923,8 @@ impl Program {
         }
 
         let mut compiled = CompiledProgram::default();
-        let mut overflow_command = None;
         let mut overflow_schedule = None;
         for (index, handler) in self.handlers.iter().enumerate() {
-            if matches!(handler.trigger, Trigger::SlashCommand { .. })
-                && compiled.commands.len() == MAX_COMMANDS
-                && overflow_command.is_none()
-            {
-                overflow_command = Some(index);
-            }
             if matches!(handler.trigger, Trigger::Schedule { .. })
                 && compiled.schedules.len() == MAX_SCHEDULES
                 && overflow_schedule.is_none()
@@ -620,9 +937,19 @@ impl Program {
         if compiled.commands.len() > MAX_COMMANDS {
             return Err(CompileFailure {
                 error: CompileError::TooManyCommands,
-                location: Box::new(ErrorLocation::handler(
-                    overflow_command.unwrap_or(MAX_COMMANDS),
-                )),
+                location: Box::new(ErrorLocation::handler(MAX_COMMANDS)),
+            });
+        }
+        if compiled.user_commands.len() > MAX_CONTEXT_COMMANDS {
+            return Err(CompileFailure {
+                error: CompileError::TooManyContextCommands("user"),
+                location: Box::new(ErrorLocation::handler(MAX_CONTEXT_COMMANDS)),
+            });
+        }
+        if compiled.message_commands.len() > MAX_CONTEXT_COMMANDS {
+            return Err(CompileFailure {
+                error: CompileError::TooManyContextCommands("message"),
+                location: Box::new(ErrorLocation::handler(MAX_CONTEXT_COMMANDS)),
             });
         }
         if compiled.schedules.len() > MAX_SCHEDULES {
@@ -661,6 +988,7 @@ fn compile_handler(
         trigger: kind,
         options,
         steps: 0,
+        can_show_modal: kind.can_open_modal(),
         saved: BTreeSet::new(),
         step_refs: Vec::new(),
         expr_path: Vec::new(),
@@ -688,6 +1016,83 @@ fn compile_trigger<'a>(
             compile_slash_trigger(compiled, index, name, description, options)?;
             (TriggerKind::Slash, format!("/{name}"), options.as_slice())
         }
+        Trigger::SlashSubcommand {
+            command,
+            group,
+            subcommand,
+            description,
+            options,
+        } => {
+            let label = compile_subcommand_trigger(
+                compiled,
+                index,
+                command,
+                group.as_deref(),
+                subcommand,
+                description,
+                options,
+            )?;
+            (TriggerKind::SlashSubcommand, label, options.as_slice())
+        }
+        Trigger::UserCommand { name } => {
+            let trimmed = name.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > MAX_NAME_LEN {
+                return Err(at_trigger(HandlerError::InvalidContextName));
+            }
+            if compiled
+                .user_commands
+                .insert(trimmed.to_owned(), index)
+                .is_some()
+            {
+                return Err(at_trigger(HandlerError::DuplicateContextCommand(
+                    "user",
+                    trimmed.to_owned(),
+                )));
+            }
+            compiled.context_commands.push(ContextCommandSpec {
+                name: trimmed.to_owned(),
+                kind: ContextCommandKind::User,
+            });
+            (
+                TriggerKind::UserCommand,
+                format!("user menu \"{trimmed}\""),
+                &[],
+            )
+        }
+        Trigger::MessageCommand { name } => {
+            let trimmed = name.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > MAX_NAME_LEN {
+                return Err(at_trigger(HandlerError::InvalidContextName));
+            }
+            if compiled
+                .message_commands
+                .insert(trimmed.to_owned(), index)
+                .is_some()
+            {
+                return Err(at_trigger(HandlerError::DuplicateContextCommand(
+                    "message",
+                    trimmed.to_owned(),
+                )));
+            }
+            compiled.context_commands.push(ContextCommandSpec {
+                name: trimmed.to_owned(),
+                kind: ContextCommandKind::Message,
+            });
+            (
+                TriggerKind::MessageCommand,
+                format!("message menu \"{trimmed}\""),
+                &[],
+            )
+        }
+        Trigger::ModalSubmit { id } => {
+            let id = check_component_id(id)
+                .map_err(|()| HandlerError::InvalidComponentId(id.clone()))
+                .map_err(at_trigger)?;
+            if compiled.modals.insert(id.to_owned(), index).is_some() {
+                return Err(at_trigger(HandlerError::DuplicateModal(id.to_owned())));
+            }
+            (TriggerKind::ModalSubmit, format!("modal \"{id}\""), &[])
+        }
         Trigger::MemberJoin {} => {
             compiled.member_join.push(index);
             (TriggerKind::MemberJoin, "member join".to_owned(), &[])
@@ -695,6 +1100,18 @@ fn compile_trigger<'a>(
         Trigger::MemberLeave {} => {
             compiled.member_leave.push(index);
             (TriggerKind::MemberLeave, "member leave".to_owned(), &[])
+        }
+        Trigger::MemberUpdate {} => {
+            compiled.member_update.push(index);
+            (TriggerKind::MemberUpdate, "member updated".to_owned(), &[])
+        }
+        Trigger::MemberBan {} => {
+            compiled.member_ban.push(index);
+            (TriggerKind::MemberBan, "member banned".to_owned(), &[])
+        }
+        Trigger::MemberUnban {} => {
+            compiled.member_unban.push(index);
+            (TriggerKind::MemberUnban, "member unbanned".to_owned(), &[])
         }
         Trigger::MessageContains {
             pattern,
@@ -719,6 +1136,18 @@ fn compile_trigger<'a>(
                 &[],
             )
         }
+        Trigger::MessageEdit {} => {
+            compiled.message_edit.push(index);
+            (TriggerKind::MessageEdit, "message edited".to_owned(), &[])
+        }
+        Trigger::MessageDelete {} => {
+            compiled.message_delete.push(index);
+            (
+                TriggerKind::MessageDelete,
+                "message deleted".to_owned(),
+                &[],
+            )
+        }
         Trigger::ReactionAdd { emoji, message_id } => {
             let label = push_reaction_handler(
                 &mut compiled.reaction_add,
@@ -740,6 +1169,44 @@ fn compile_trigger<'a>(
             )
             .map_err(at_trigger)?;
             (TriggerKind::ReactionRemove, label, &[])
+        }
+        Trigger::ThreadCreate {} => {
+            compiled.thread_create.push(index);
+            (TriggerKind::ThreadCreate, "thread created".to_owned(), &[])
+        }
+        Trigger::InviteCreate {} => {
+            compiled.invite_create.push(index);
+            (TriggerKind::InviteCreate, "invite created".to_owned(), &[])
+        }
+        Trigger::AutoModExecution { rule_id } => {
+            let parsed_rule = match rule_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(raw) => Some(
+                    parse_id(raw)
+                        .map_err(|_| at_trigger(HandlerError::InvalidRuleId(raw.to_owned())))?,
+                ),
+                None => None,
+            };
+            compiled.automod_execution.push(AutoModMatcher {
+                rule_id: parsed_rule,
+                handler: index,
+            });
+            let label = match parsed_rule {
+                Some(id) => format!("AutoMod rule {id}"),
+                None => "AutoMod execution".to_owned(),
+            };
+            (TriggerKind::AutoModExecution, label, &[])
+        }
+        Trigger::PollVoteAdd {} => {
+            compiled.poll_vote_add.push(index);
+            (TriggerKind::PollVoteAdd, "poll vote added".to_owned(), &[])
+        }
+        Trigger::VoiceStateUpdate {} => {
+            compiled.voice_state_update.push(index);
+            (
+                TriggerKind::VoiceStateUpdate,
+                "voice state update".to_owned(),
+                &[],
+            )
         }
         Trigger::ButtonClick { id } => {
             let id = compile_component_trigger(&mut compiled.buttons, index, id, true)
@@ -777,6 +1244,13 @@ fn compile_slash_trigger(
     check_name(name).map_err(at_trigger)?;
     check_description(description).map_err(at_trigger)?;
     check_options(options).map_err(|(opt, reason)| handler_failure(index, Some(opt), reason))?;
+    if compiled
+        .commands
+        .iter()
+        .any(|cmd| cmd.name == name && (!cmd.subcommands.is_empty() || !cmd.groups.is_empty()))
+    {
+        return Err(at_trigger(HandlerError::MixedSubcommands(name.to_owned())));
+    }
     if compiled.slash.insert(name.to_owned(), index).is_some() {
         return Err(at_trigger(HandlerError::DuplicateCommand(name.to_owned())));
     }
@@ -784,8 +1258,114 @@ fn compile_slash_trigger(
         name: name.to_owned(),
         description: description.to_owned(),
         options: options.to_vec(),
+        subcommands: Vec::new(),
+        groups: Vec::new(),
     });
     Ok(())
+}
+
+fn compile_subcommand_trigger(
+    compiled: &mut CompiledProgram,
+    index: usize,
+    command: &str,
+    group: Option<&str>,
+    subcommand: &str,
+    description: &str,
+    options: &[CommandOption],
+) -> Result<String, CompileFailure> {
+    let at_trigger = |reason| handler_failure(index, None, reason);
+    check_name(command).map_err(at_trigger)?;
+    let group = group.map(str::trim).filter(|s| !s.is_empty());
+    if let Some(group_name) = group {
+        check_name(group_name).map_err(at_trigger)?;
+    }
+    check_name(subcommand).map_err(at_trigger)?;
+    check_description(description).map_err(at_trigger)?;
+    check_options(options).map_err(|(opt, reason)| handler_failure(index, Some(opt), reason))?;
+
+    if compiled.slash.contains_key(command) {
+        return Err(at_trigger(HandlerError::MixedSubcommands(
+            command.to_owned(),
+        )));
+    }
+
+    let key = (
+        command.to_owned(),
+        group.map(str::to_owned),
+        subcommand.to_owned(),
+    );
+    let full_label = match group {
+        Some(group_name) => format!("/{command} {group_name} {subcommand}"),
+        None => format!("/{command} {subcommand}"),
+    };
+    if compiled.subcommands.insert(key, index).is_some() {
+        return Err(at_trigger(HandlerError::DuplicateSubcommand(
+            full_label.trim_start_matches('/').to_owned(),
+        )));
+    }
+
+    let cmd = match compiled.commands.iter_mut().find(|c| c.name == command) {
+        Some(existing) => existing,
+        None => {
+            compiled.commands.push(SlashCommandSpec {
+                name: command.to_owned(),
+                description: format!("{command} commands"),
+                options: Vec::new(),
+                subcommands: Vec::new(),
+                groups: Vec::new(),
+            });
+            compiled
+                .commands
+                .last_mut()
+                .expect("just pushed command spec")
+        }
+    };
+
+    let sub_spec = SlashSubcommandSpec {
+        name: subcommand.to_owned(),
+        description: description.to_owned(),
+        options: options.to_vec(),
+    };
+
+    match group {
+        None => {
+            if cmd.groups.iter().any(|g| g.name == subcommand) {
+                return Err(at_trigger(HandlerError::ConflictingSubcommandGroup(
+                    subcommand.to_owned(),
+                    command.to_owned(),
+                )));
+            }
+            if cmd.subcommands.len() + cmd.groups.len() >= MAX_OPTIONS {
+                return Err(at_trigger(HandlerError::TooManySubcommands));
+            }
+            cmd.subcommands.push(sub_spec);
+        }
+        Some(group_name) => {
+            if cmd.subcommands.iter().any(|s| s.name == group_name) {
+                return Err(at_trigger(HandlerError::ConflictingSubcommandGroup(
+                    group_name.to_owned(),
+                    command.to_owned(),
+                )));
+            }
+            if let Some(existing_group) = cmd.groups.iter_mut().find(|g| g.name == group_name) {
+                if existing_group.subcommands.len() >= MAX_OPTIONS {
+                    return Err(at_trigger(HandlerError::TooManySubcommands));
+                }
+                existing_group.subcommands.push(sub_spec);
+            } else {
+                if cmd.subcommands.len() + cmd.groups.len() >= MAX_OPTIONS {
+                    return Err(at_trigger(HandlerError::TooManySubcommands));
+                }
+                cmd.groups.push(SlashSubcommandGroupSpec {
+                    name: group_name.to_owned(),
+                    description: format!("{group_name} commands"),
+                    subcommands: vec![sub_spec],
+                });
+            }
+        }
+    }
+
+    Ok(full_label)
 }
 
 fn compile_component_trigger<'a>(
@@ -812,6 +1392,7 @@ struct Checker<'a> {
     trigger: TriggerKind,
     options: &'a [CommandOption],
     steps: usize,
+    can_show_modal: bool,
     saved: BTreeSet<(Scope, String)>,
     step_refs: Vec<StepRef>,
     expr_path: Vec<usize>,
@@ -903,15 +1484,43 @@ impl Checker<'_> {
                 ephemeral,
                 embeds,
                 components,
-            } => self.reply_step(content, *ephemeral, embeds, components)?,
+                poll,
+                attachments,
+            } => {
+                self.can_show_modal = false;
+                self.reply_step(
+                    content,
+                    *ephemeral,
+                    embeds,
+                    components,
+                    poll.as_ref(),
+                    attachments,
+                )?
+            }
             Statement::SendMessage {
                 channel_id,
                 content,
                 embeds,
                 components,
+                poll,
+                attachments,
+                reply_to_message_id,
             } => Step::SendMessage {
-                channel_id: parse_id(channel_id).map_err(|reason| self.fail(reason))?,
-                message: self.check_message(content, embeds, components, true)?,
+                channel_id: self.id_or_template(channel_id)?,
+                message: self.check_message(
+                    content,
+                    embeds,
+                    components,
+                    poll.as_ref(),
+                    attachments,
+                    true,
+                )?,
+                reply_to_message_id: reply_to_message_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|raw| self.id_or_template(raw))
+                    .transpose()?,
             },
             Statement::UpdateMessage {
                 content,
@@ -919,8 +1528,119 @@ impl Checker<'_> {
                 components,
             } => {
                 self.require(trigger.is_component(), "update message")?;
+                self.can_show_modal = false;
                 Step::UpdateMessage {
-                    message: self.check_message(content, embeds, components, false)?,
+                    message: self.check_message(content, embeds, components, None, &[], false)?,
+                }
+            }
+            Statement::ShowModal { id, title, inputs } => {
+                self.require(trigger.can_open_modal(), "open modal")?;
+                if !self.can_show_modal {
+                    return Err(self.fail(StepError::ModalNotFirstResponse));
+                }
+                self.can_show_modal = false;
+                self.modal_step(id, title, inputs)?
+            }
+            Statement::CreateThreadFromMessage {
+                name,
+                auto_archive_minutes,
+            } => {
+                self.require(trigger.has_message(), "create thread from message")?;
+                Step::CreateThreadFromMessage {
+                    name: self
+                        .required_text(name, MAX_THREAD_NAME_LEN, "thread name")
+                        .map_err(|reason| self.fail(reason))?,
+                    auto_archive_minutes: check_archive_duration(*auto_archive_minutes)
+                        .map_err(|reason| self.fail(reason))?,
+                }
+            }
+            Statement::CreateThread {
+                channel_id,
+                name,
+                private,
+                auto_archive_minutes,
+            } => Step::CreateThread {
+                channel_id: self.id_or_template(channel_id)?,
+                name: self
+                    .required_text(name, MAX_THREAD_NAME_LEN, "thread name")
+                    .map_err(|reason| self.fail(reason))?,
+                private: *private,
+                auto_archive_minutes: check_archive_duration(*auto_archive_minutes)
+                    .map_err(|reason| self.fail(reason))?,
+            },
+            Statement::CreateForumPost {
+                channel_id,
+                title,
+                content,
+                embeds,
+            } => {
+                let compiled_embeds = self
+                    .compile_embeds(embeds)
+                    .map_err(|reason| self.fail(reason))?;
+                let content = self
+                    .optional_content(content)
+                    .map_err(|reason| self.fail(reason))?;
+                if content.is_none() && compiled_embeds.is_empty() {
+                    return Err(self.fail(StepError::EmptyMessage));
+                }
+                Step::CreateForumPost {
+                    channel_id: self.id_or_template(channel_id)?,
+                    title: self
+                        .required_text(title, MAX_THREAD_NAME_LEN, "forum post title")
+                        .map_err(|reason| self.fail(reason))?,
+                    content,
+                    embeds: compiled_embeds,
+                }
+            }
+            Statement::JoinThread { thread_id } => Step::JoinThread {
+                thread_id: self.id_or_template(thread_id)?,
+            },
+            Statement::AddThreadMember {
+                thread_id,
+                member_id,
+            } => Step::AddThreadMember {
+                thread_id: self.id_or_template(thread_id)?,
+                member_id: self
+                    .member_id(member_id)
+                    .map_err(|reason| self.fail(reason))?,
+            },
+            Statement::RemoveThreadMember {
+                thread_id,
+                member_id,
+            } => Step::RemoveThreadMember {
+                thread_id: self.id_or_template(thread_id)?,
+                member_id: self
+                    .member_id(member_id)
+                    .map_err(|reason| self.fail(reason))?,
+            },
+            Statement::PinMessage {
+                channel_id,
+                message_id,
+            } => Step::PinMessage {
+                channel_id: self.id_or_template(channel_id)?,
+                message_id: self.id_or_template(message_id)?,
+            },
+            Statement::UnpinMessage {
+                channel_id,
+                message_id,
+            } => Step::UnpinMessage {
+                channel_id: self.id_or_template(channel_id)?,
+                message_id: self.id_or_template(message_id)?,
+            },
+            Statement::PublishMessage {
+                channel_id,
+                message_id,
+            } => Step::PublishMessage {
+                channel_id: self.id_or_template(channel_id)?,
+                message_id: self.id_or_template(message_id)?,
+            },
+            Statement::BulkDeleteMessages { channel_id, count } => {
+                if !(2..=100).contains(count) {
+                    return Err(self.fail(StepError::InvalidBulkDeleteCount));
+                }
+                Step::BulkDeleteMessages {
+                    channel_id: self.id_or_template(channel_id)?,
+                    count: *count,
                 }
             }
             Statement::AddRole { role_id } => {
@@ -943,7 +1663,10 @@ impl Checker<'_> {
                 Step::Ban { member_id, reason }
             }
             Statement::DeleteMessage {} => {
-                self.require(matches!(trigger, TriggerKind::Message), "delete message")?;
+                self.require(
+                    matches!(trigger, TriggerKind::Message | TriggerKind::MessageEdit),
+                    "delete message",
+                )?;
                 Step::DeleteMessage
             }
             Statement::DirectMessage { member_id, content } => Step::DirectMessage {
@@ -955,15 +1678,7 @@ impl Checker<'_> {
                     .map_err(|reason| self.fail(reason))?,
             },
             Statement::React { emoji } => {
-                self.require(
-                    matches!(
-                        trigger,
-                        TriggerKind::Message
-                            | TriggerKind::ReactionAdd
-                            | TriggerKind::ReactionRemove
-                    ),
-                    "react",
-                )?;
+                self.require(trigger.has_message(), "react")?;
                 Step::React(parse_emoji(emoji).map_err(|reason| self.fail(reason))?)
             }
             Statement::If {
@@ -985,6 +1700,7 @@ impl Checker<'_> {
                 if *seconds == 0 || *seconds > MAX_WAIT_SECONDS {
                     return Err(self.fail(StepError::InvalidWait));
                 }
+                self.can_show_modal = false;
                 Step::Wait(*seconds)
             }
             Statement::Stop {} => Step::Stop,
@@ -997,17 +1713,99 @@ impl Checker<'_> {
         ephemeral: bool,
         embeds: &[EmbedSpec],
         components: &[ComponentRow],
+        poll: Option<&PollSpec>,
+        attachments: &[AttachmentSpec],
     ) -> Result<Step, CompileFailure> {
         self.require(
-            !matches!(
-                self.trigger,
-                TriggerKind::MemberJoin | TriggerKind::MemberLeave | TriggerKind::Schedule
-            ),
+            self.trigger.is_interaction() || self.trigger.has_message(),
             "reply",
         )?;
         Ok(Step::Reply {
-            message: self.check_message(content, embeds, components, true)?,
+            message: self.check_message(content, embeds, components, poll, attachments, true)?,
             ephemeral: ephemeral && self.trigger.is_interaction(),
+        })
+    }
+
+    fn modal_step(
+        &mut self,
+        id: &str,
+        title: &str,
+        inputs: &[ModalInputSpec],
+    ) -> Result<Step, CompileFailure> {
+        let id = check_component_id(id)
+            .map_err(|()| self.fail(StepError::InvalidComponentId(id.to_owned())))?
+            .to_owned();
+        let title = self
+            .required_text(title, MAX_MODAL_TITLE_LEN, "modal title")
+            .map_err(|reason| self.fail(reason))?;
+        if inputs.is_empty() || inputs.len() > MAX_MODAL_INPUTS {
+            return Err(self.fail(StepError::InvalidModalInputCount));
+        }
+
+        let mut seen_ids = HashSet::with_capacity(inputs.len());
+        let mut compiled_inputs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let input_id = check_component_id(&input.id)
+                .map_err(|()| self.fail(StepError::InvalidComponentId(input.id.clone())))?
+                .to_owned();
+            if !seen_ids.insert(input_id.clone()) {
+                return Err(self.fail(StepError::DuplicateModalInputId(input_id)));
+            }
+            let label = self
+                .required_text(&input.label, MAX_MODAL_LABEL_LEN, "modal input label")
+                .map_err(|reason| self.fail(reason))?;
+            let placeholder = self
+                .optional_text(
+                    input.placeholder.as_deref(),
+                    MAX_MODAL_PLACEHOLDER_LEN,
+                    "modal input placeholder",
+                )
+                .map_err(|reason| self.fail(reason))?;
+            let value = self
+                .optional_text(
+                    input.value.as_deref(),
+                    MAX_MODAL_VALUE_LEN,
+                    "modal input value",
+                )
+                .map_err(|reason| self.fail(reason))?;
+            if let Some(min) = input.min_length
+                && usize::from(min) > MAX_MODAL_VALUE_LEN
+            {
+                return Err(self.fail(StepError::InvalidModalInputBounds(
+                    input_id,
+                    min,
+                    MAX_MODAL_VALUE_LEN as u16,
+                )));
+            }
+            if let Some(max) = input.max_length
+                && (max == 0 || usize::from(max) > MAX_MODAL_VALUE_LEN)
+            {
+                return Err(self.fail(StepError::InvalidModalInputBounds(
+                    input_id,
+                    input.min_length.unwrap_or(0),
+                    max,
+                )));
+            }
+            if let (Some(min), Some(max)) = (input.min_length, input.max_length)
+                && min > max
+            {
+                return Err(self.fail(StepError::InvalidModalInputBounds(input_id, min, max)));
+            }
+            compiled_inputs.push(CompiledModalInput {
+                id: input_id,
+                label,
+                style: input.style,
+                placeholder,
+                required: input.required,
+                min_length: input.min_length,
+                max_length: input.max_length,
+                value,
+            });
+        }
+        Ok(Step::ShowModal {
+            id,
+            title,
+            inputs: compiled_inputs,
         })
     }
 
@@ -1044,27 +1842,36 @@ impl Checker<'_> {
         content: &str,
         embeds: &[EmbedSpec],
         components: &[ComponentRow],
+        poll: Option<&PollSpec>,
+        attachments: &[AttachmentSpec],
         require_body: bool,
     ) -> Result<CompiledMessage, CompileFailure> {
-        self.message(content, embeds, components, require_body)
+        self.message(content, embeds, components, poll, attachments, require_body)
             .map_err(|reason| self.fail(reason))
+    }
+
+    fn id_or_template(&mut self, value: &str) -> Result<String, CompileFailure> {
+        self.member_id(value).map_err(|reason| self.fail(reason))
     }
 
     fn member_role_id(
         &mut self,
         action: &'static str,
         role_id: &str,
-    ) -> Result<u64, CompileFailure> {
+    ) -> Result<String, CompileFailure> {
         if matches!(
             self.trigger,
-            TriggerKind::MemberLeave | TriggerKind::Schedule
+            TriggerKind::MemberLeave
+                | TriggerKind::MemberUnban
+                | TriggerKind::MessageDelete
+                | TriggerKind::Schedule
         ) {
             return Err(self.fail(StepError::NotAvailable {
                 action,
                 trigger: self.trigger.name(),
             }));
         }
-        parse_id(role_id).map_err(|reason| self.fail(reason))
+        self.id_or_template(role_id)
     }
 
     fn check_var(&mut self, scope: Scope, name: &str) -> Result<String, CompileFailure> {
@@ -1104,8 +1911,12 @@ impl Checker<'_> {
         nesting: usize,
     ) -> Result<Step, CompileFailure> {
         let condition = self.check_expr(condition)?;
+        let saved_modal_gate = self.can_show_modal;
         let then_steps = self.sub_block(Branch::Then, then_branch, nesting)?;
+        let after_then = self.can_show_modal;
+        self.can_show_modal = saved_modal_gate;
         let else_steps = self.sub_block(Branch::Else, else_branch, nesting)?;
+        self.can_show_modal = after_then && self.can_show_modal;
         Ok(Step::If {
             condition,
             then_steps,
@@ -1160,7 +1971,10 @@ impl Checker<'_> {
             Expr::Boolean { value } => Calc::Bool(*value),
             Expr::Variable { scope, name } => Calc::Variable(*scope, self.variable(*scope, name)?),
             Expr::Option { name } => {
-                if !matches!(self.trigger, TriggerKind::Slash) {
+                if !matches!(
+                    self.trigger,
+                    TriggerKind::Slash | TriggerKind::SlashSubcommand
+                ) {
                     return Err(StepError::NotAvailable {
                         action: "option",
                         trigger: self.trigger.name(),
@@ -1180,6 +1994,30 @@ impl Checker<'_> {
                 }
                 Calc::Selected
             }
+            Expr::ModalField { id } => {
+                if !matches!(self.trigger, TriggerKind::ModalSubmit) {
+                    return Err(StepError::NotAvailable {
+                        action: "modal field",
+                        trigger: self.trigger.name(),
+                    });
+                }
+                let id = check_component_id(id)
+                    .map_err(|()| StepError::InvalidComponentId(id.clone()))?
+                    .to_owned();
+                Calc::ModalField(id)
+            }
+            Expr::Target { field } => {
+                if !matches!(
+                    self.trigger,
+                    TriggerKind::UserCommand | TriggerKind::MessageCommand
+                ) {
+                    return Err(StepError::NotAvailable {
+                        action: "target",
+                        trigger: self.trigger.name(),
+                    });
+                }
+                Calc::Target(*field)
+            }
             Expr::Random { min, max } => {
                 Calc::Random(self.boxed(0, min, next)?, self.boxed(1, max, next)?)
             }
@@ -1197,10 +2035,8 @@ impl Checker<'_> {
             }
             Expr::Not { value } => Calc::Not(self.boxed(0, value, next)?),
             Expr::HasRole { role_id } => {
-                if matches!(
-                    self.trigger,
-                    TriggerKind::MemberLeave | TriggerKind::ReactionRemove | TriggerKind::Schedule
-                ) {
+                if !self.trigger.has_member() || matches!(self.trigger, TriggerKind::ReactionRemove)
+                {
                     return Err(StepError::NotAvailable {
                         action: "role check",
                         trigger: self.trigger.name(),
@@ -1216,14 +2052,7 @@ impl Checker<'_> {
             .map(Box::new)
     }
 
-    fn message(
-        &mut self,
-        content: &str,
-        embeds: &[EmbedSpec],
-        components: &[ComponentRow],
-        require_body: bool,
-    ) -> Result<CompiledMessage, StepError> {
-        let content = self.optional_content(content)?;
+    fn compile_embeds(&mut self, embeds: &[EmbedSpec]) -> Result<Vec<CompiledEmbed>, StepError> {
         if embeds.len() > MAX_EMBEDS {
             self.embed_loc = Some(EmbedLocation {
                 index: MAX_EMBEDS,
@@ -1246,11 +2075,31 @@ impl Checker<'_> {
             compiled_embeds.push(embed);
         }
         self.embed_loc = None;
+        Ok(compiled_embeds)
+    }
 
+    fn message(
+        &mut self,
+        content: &str,
+        embeds: &[EmbedSpec],
+        components: &[ComponentRow],
+        poll: Option<&PollSpec>,
+        attachments: &[AttachmentSpec],
+        require_body: bool,
+    ) -> Result<CompiledMessage, StepError> {
+        let content = self.optional_content(content)?;
+        let compiled_embeds = self.compile_embeds(embeds)?;
         let compiled_components = self.components(components)?;
         self.component_loc = None;
+        let compiled_poll = poll.map(|spec| self.poll(spec)).transpose()?;
+        let compiled_attachments = self.attachments(attachments)?;
 
-        if require_body && content.is_none() && compiled_embeds.is_empty() {
+        if require_body
+            && content.is_none()
+            && compiled_embeds.is_empty()
+            && compiled_poll.is_none()
+            && compiled_attachments.is_empty()
+        {
             return Err(StepError::EmptyMessage);
         }
         if !require_body
@@ -1265,7 +2114,52 @@ impl Checker<'_> {
             content,
             embeds: compiled_embeds,
             components: compiled_components,
+            poll: compiled_poll,
+            attachments: compiled_attachments,
         })
+    }
+
+    fn poll(&mut self, spec: &PollSpec) -> Result<CompiledPoll, StepError> {
+        let question =
+            self.required_text(&spec.question, MAX_POLL_QUESTION_LEN, "poll question")?;
+        if spec.answers.is_empty() || spec.answers.len() > MAX_POLL_ANSWERS {
+            return Err(StepError::InvalidPollAnswerCount);
+        }
+        if spec.duration_hours == 0 || spec.duration_hours > MAX_POLL_HOURS {
+            return Err(StepError::InvalidPollDuration);
+        }
+        let mut answers = Vec::with_capacity(spec.answers.len());
+        for answer in &spec.answers {
+            let text = self.required_text(&answer.text, MAX_POLL_ANSWER_LEN, "poll answer")?;
+            let emoji = optional_emoji(answer.emoji.as_deref())?;
+            answers.push(CompiledPollAnswer { text, emoji });
+        }
+        Ok(CompiledPoll {
+            question,
+            answers,
+            duration_hours: spec.duration_hours,
+            allow_multiselect: spec.allow_multiselect,
+        })
+    }
+
+    fn attachments(
+        &mut self,
+        specs: &[AttachmentSpec],
+    ) -> Result<Vec<CompiledAttachment>, StepError> {
+        if specs.len() > MAX_ATTACHMENTS {
+            return Err(StepError::TooManyAttachments);
+        }
+        let mut compiled = Vec::with_capacity(specs.len());
+        for spec in specs {
+            let filename = check_filename(&spec.filename)?;
+            let content = self.required_text(
+                &spec.content,
+                MAX_ATTACHMENT_CONTENT_LEN,
+                "attachment content",
+            )?;
+            compiled.push(CompiledAttachment { filename, content });
+        }
+        Ok(compiled)
     }
 
     fn optional_content(&mut self, content: &str) -> Result<Option<String>, StepError> {
@@ -1316,7 +2210,7 @@ impl Checker<'_> {
 
     fn member_id(&mut self, value: &str) -> Result<String, StepError> {
         let value = value.trim();
-        if value.is_empty() || value.chars().count() > MAX_MEMBER_ID_TEMPLATE_LEN {
+        if value.is_empty() || value.chars().count() > MAX_ID_TEMPLATE_LEN {
             return Err(StepError::InvalidId(value.to_owned()));
         }
         if !value.contains(['{', '}']) {
@@ -1514,6 +2408,24 @@ impl Checker<'_> {
                     options,
                     &mut seen_ids,
                 )?,
+                ComponentRow::EntitySelectMenu {
+                    id,
+                    kind,
+                    placeholder,
+                    min_values,
+                    max_values,
+                    disabled,
+                    channel_types,
+                } => self.entity_select_menu(
+                    id,
+                    *kind,
+                    placeholder.as_deref(),
+                    *min_values,
+                    *max_values,
+                    *disabled,
+                    channel_types,
+                    &mut seen_ids,
+                )?,
             });
         }
         Ok(compiled)
@@ -1665,6 +2577,54 @@ impl Checker<'_> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn entity_select_menu(
+        &mut self,
+        id: &str,
+        kind: EntitySelectKind,
+        placeholder: Option<&str>,
+        min_values: Option<u8>,
+        max_values: Option<u8>,
+        disabled: bool,
+        channel_types: &[ChannelFilter],
+        seen_ids: &mut HashSet<String>,
+    ) -> Result<CompiledComponentRow, StepError> {
+        let id = check_component_id(id)
+            .map_err(|()| StepError::InvalidComponentId(id.to_owned()))?
+            .to_owned();
+        if !seen_ids.insert(id.clone()) {
+            return Err(StepError::DuplicateComponentId(id));
+        }
+        let placeholder = self.optional_text(
+            placeholder,
+            MAX_SELECT_PLACEHOLDER_LEN,
+            "select menu placeholder",
+        )?;
+        let min = min_values.unwrap_or(1);
+        let max = max_values.unwrap_or(1);
+        if min == 0 || max == 0 || min > max || max > 25 {
+            return Err(StepError::InvalidSelectBounds {
+                min,
+                max,
+                options: 25,
+            });
+        }
+        let channel_types = if kind == EntitySelectKind::Channel {
+            channel_types.to_vec()
+        } else {
+            Vec::new()
+        };
+        Ok(CompiledComponentRow::EntitySelectMenu {
+            id,
+            kind,
+            placeholder,
+            min_values: min,
+            max_values: max,
+            disabled,
+            channel_types,
+        })
+    }
+
     fn variable(&mut self, scope: Scope, name: &str) -> Result<String, StepError> {
         if scope != Scope::Local && matches!(self.trigger, TriggerKind::Schedule) {
             return Err(StepError::NotAvailable {
@@ -1744,9 +2704,109 @@ fn check_options(options: &[CommandOption]) -> Result<(), (usize, HandlerError)>
                 HandlerError::RequiredAfterOptional(option.name.clone()),
             ));
         }
+        check_option_choices_and_autocomplete(option).map_err(|reason| (index, reason))?;
         optional_seen |= !option.required;
     }
     Ok(())
+}
+
+fn check_option_choices_and_autocomplete(option: &CommandOption) -> Result<(), HandlerError> {
+    let supports_choices = matches!(
+        option.kind,
+        OptionKind::String | OptionKind::Integer | OptionKind::Number
+    );
+    if (!option.choices.is_empty() || !option.autocomplete.is_empty()) && !supports_choices {
+        return Err(HandlerError::ChoicesUnsupported(option.name.clone()));
+    }
+    if !option.choices.is_empty() && !option.autocomplete.is_empty() {
+        return Err(HandlerError::ChoicesAndAutocompleteConflict(
+            option.name.clone(),
+        ));
+    }
+    if option.choices.len() > MAX_CHOICES || option.autocomplete.len() > MAX_CHOICES {
+        return Err(HandlerError::TooManyChoices(option.name.clone()));
+    }
+    for CommandOptionChoiceSpec { name, value } in &option.choices {
+        let name_len = name.chars().count();
+        if name_len == 0 || name_len > MAX_DESCRIPTION_LEN || name.trim().is_empty() {
+            return Err(HandlerError::InvalidChoice(
+                option.name.clone(),
+                name.clone(),
+            ));
+        }
+        validate_choice_value(option.kind, &option.name, value)?;
+    }
+    for suggestion in &option.autocomplete {
+        validate_choice_value(option.kind, &option.name, suggestion)?;
+    }
+    Ok(())
+}
+
+fn validate_choice_value(
+    kind: OptionKind,
+    option_name: &str,
+    value: &str,
+) -> Result<(), HandlerError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(HandlerError::InvalidChoice(
+            option_name.to_owned(),
+            value.to_owned(),
+        ));
+    }
+    match kind {
+        OptionKind::String => {
+            if value.chars().count() > MAX_DESCRIPTION_LEN {
+                return Err(HandlerError::InvalidChoice(
+                    option_name.to_owned(),
+                    value.to_owned(),
+                ));
+            }
+        }
+        OptionKind::Integer => {
+            if trimmed.parse::<i64>().is_err() {
+                return Err(HandlerError::InvalidChoice(
+                    option_name.to_owned(),
+                    value.to_owned(),
+                ));
+            }
+        }
+        OptionKind::Number => {
+            let Ok(parsed) = trimmed.parse::<f64>() else {
+                return Err(HandlerError::InvalidChoice(
+                    option_name.to_owned(),
+                    value.to_owned(),
+                ));
+            };
+            if !parsed.is_finite() {
+                return Err(HandlerError::InvalidChoice(
+                    option_name.to_owned(),
+                    value.to_owned(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn check_archive_duration(minutes: Option<u16>) -> Result<Option<u16>, StepError> {
+    match minutes {
+        None | Some(60 | 1440 | 4320 | 10080) => Ok(minutes),
+        Some(_) => Err(StepError::InvalidArchiveDuration),
+    }
+}
+
+fn check_filename(value: &str) -> Result<String, StepError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.chars().count() > MAX_ATTACHMENT_FILENAME_LEN
+        || trimmed.contains(['/', '\\'])
+        || trimmed.contains("..")
+    {
+        return Err(StepError::InvalidFilename(value.to_owned()));
+    }
+    Ok(trimmed.to_owned())
 }
 
 fn parse_id(value: &str) -> Result<u64, StepError> {
@@ -1977,7 +3037,7 @@ fn schedule_label(interval: u32, unit: ScheduleUnit) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::OptionKind;
+    use crate::model::{ModalInputSpec, OptionKind, PollAnswerSpec};
 
     fn slash(name: &str, actions: Vec<Statement>) -> Handler {
         Handler {
@@ -1996,6 +3056,8 @@ mod tests {
             ephemeral: false,
             embeds: Vec::new(),
             components: Vec::new(),
+            poll: None,
+            attachments: Vec::new(),
         }
     }
 
@@ -2025,8 +3087,7 @@ mod tests {
             compiled.gateway_needs(),
             GatewayNeeds {
                 members: true,
-                messages: false,
-                reactions: false,
+                ..GatewayNeeds::default()
             }
         );
     }
@@ -2205,6 +3266,8 @@ mod tests {
             description: "An option".to_owned(),
             kind: OptionKind::String,
             required,
+            choices: Vec::new(),
+            autocomplete: Vec::new(),
         };
         let program = Program {
             handlers: vec![Handler {
@@ -2424,6 +3487,9 @@ mod tests {
                         content: "Bye {user.name}".to_owned(),
                         embeds: Vec::new(),
                         components: Vec::new(),
+                        poll: None,
+                        attachments: Vec::new(),
+                        reply_to_message_id: None,
                     }],
                 },
                 Handler {
@@ -2454,6 +3520,9 @@ mod tests {
                         content: "Hourly check".to_owned(),
                         embeds: Vec::new(),
                         components: Vec::new(),
+                        poll: None,
+                        attachments: Vec::new(),
+                        reply_to_message_id: None,
                     }],
                 },
             ],
@@ -2464,8 +3533,8 @@ mod tests {
             compiled.gateway_needs(),
             GatewayNeeds {
                 members: true,
-                messages: false,
                 reactions: true,
+                ..GatewayNeeds::default()
             }
         );
         assert_eq!(
@@ -2605,6 +3674,162 @@ mod tests {
                         action: "saved variable",
                         trigger: "scheduled task"
                     },
+                    ..
+                },
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn compiles_subcommands_context_commands_modals_polls_and_threads() {
+        let program = Program {
+            handlers: vec![
+                Handler {
+                    trigger: Trigger::SlashSubcommand {
+                        command: "admin".to_owned(),
+                        group: Some("user".to_owned()),
+                        subcommand: "warn".to_owned(),
+                        description: "Warn a member".to_owned(),
+                        options: vec![CommandOption {
+                            name: "severity".to_owned(),
+                            description: "Severity".to_owned(),
+                            kind: OptionKind::String,
+                            required: true,
+                            choices: vec![CommandOptionChoiceSpec {
+                                name: "Low".to_owned(),
+                                value: "low".to_owned(),
+                            }],
+                            autocomplete: Vec::new(),
+                        }],
+                    },
+                    actions: vec![Statement::ShowModal {
+                        id: "warn_modal".to_owned(),
+                        title: "Warn details".to_owned(),
+                        inputs: vec![ModalInputSpec {
+                            id: "reason".to_owned(),
+                            label: "Reason".to_owned(),
+                            style: TextInputStyle::Paragraph,
+                            placeholder: Some("Explain why".to_owned()),
+                            required: true,
+                            min_length: Some(3),
+                            max_length: Some(200),
+                            value: None,
+                        }],
+                    }],
+                },
+                Handler {
+                    trigger: Trigger::ModalSubmit {
+                        id: "warn_modal".to_owned(),
+                    },
+                    actions: vec![Statement::Reply {
+                        content: "Submitted: {modal.reason}".to_owned(),
+                        ephemeral: true,
+                        embeds: Vec::new(),
+                        components: vec![ComponentRow::EntitySelectMenu {
+                            id: "pick_channel".to_owned(),
+                            kind: EntitySelectKind::Channel,
+                            placeholder: Some("Pick channel".to_owned()),
+                            min_values: Some(1),
+                            max_values: Some(1),
+                            disabled: false,
+                            channel_types: vec![ChannelFilter::Text],
+                        }],
+                        poll: None,
+                        attachments: vec![AttachmentSpec {
+                            filename: "log.txt".to_owned(),
+                            content: "Warned by {user.name}".to_owned(),
+                        }],
+                    }],
+                },
+                Handler {
+                    trigger: Trigger::UserCommand {
+                        name: "Inspect Member".to_owned(),
+                    },
+                    actions: vec![reply("User {target} ({target.id})")],
+                },
+                Handler {
+                    trigger: Trigger::MessageCommand {
+                        name: "Create Poll Thread".to_owned(),
+                    },
+                    actions: vec![
+                        Statement::CreateThreadFromMessage {
+                            name: "Discussion".to_owned(),
+                            auto_archive_minutes: Some(1440),
+                        },
+                        Statement::Reply {
+                            content: "".to_owned(),
+                            ephemeral: false,
+                            embeds: Vec::new(),
+                            components: Vec::new(),
+                            poll: Some(PollSpec {
+                                question: "Agree?".to_owned(),
+                                answers: vec![
+                                    PollAnswerSpec {
+                                        text: "Yes".to_owned(),
+                                        emoji: Some("👍".to_owned()),
+                                    },
+                                    PollAnswerSpec {
+                                        text: "No".to_owned(),
+                                        emoji: None,
+                                    },
+                                ],
+                                duration_hours: 24,
+                                allow_multiselect: false,
+                            }),
+                            attachments: Vec::new(),
+                        },
+                    ],
+                },
+                Handler {
+                    trigger: Trigger::AutoModExecution { rule_id: None },
+                    actions: vec![Statement::SendMessage {
+                        channel_id: "123456789012345678".to_owned(),
+                        content: "AutoMod hit: {automod.keyword}".to_owned(),
+                        embeds: Vec::new(),
+                        components: Vec::new(),
+                        poll: None,
+                        attachments: Vec::new(),
+                        reply_to_message_id: None,
+                    }],
+                },
+            ],
+        };
+
+        let compiled = program.compile().expect("new features compile");
+        assert_eq!(compiled.commands().len(), 1);
+        assert_eq!(compiled.commands()[0].groups.len(), 1);
+        assert_eq!(compiled.context_commands().len(), 2);
+        assert!(compiled.gateway_needs().automod);
+
+        // Modal after reply must fail.
+        let modal_after_reply = Program {
+            handlers: vec![slash(
+                "bad",
+                vec![
+                    reply("first"),
+                    Statement::ShowModal {
+                        id: "m".to_owned(),
+                        title: "Title".to_owned(),
+                        inputs: vec![ModalInputSpec {
+                            id: "f".to_owned(),
+                            label: "Field".to_owned(),
+                            style: TextInputStyle::Short,
+                            placeholder: None,
+                            required: true,
+                            min_length: None,
+                            max_length: None,
+                            value: None,
+                        }],
+                    },
+                ],
+            )],
+        };
+        assert!(matches!(
+            modal_after_reply.compile(),
+            Err(CompileError::Handler {
+                reason: HandlerError::Step {
+                    reason: StepError::ModalNotFirstResponse,
                     ..
                 },
                 ..

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::auth::CurrentUser;
 use crate::error::ApiError;
-use crate::runtime::{BotIntents, RuntimeError, bot_client, is_unauthorized};
+use crate::runtime::{BotIntents, BotResources, RuntimeError, bot_client, is_unauthorized};
 
 /// Hosting is free during the beta, so accounts are capped.
 const MAX_BOTS_PER_USER: i64 = 5;
@@ -21,6 +21,7 @@ pub fn routes() -> Router<AppState> {
         .route("/bots", routing::get(list).post(create))
         .route("/bots/{id}", routing::get(get).patch(update).delete(remove))
         .route("/bots/{id}/intents", routing::get(intents))
+        .route("/bots/{id}/resources", routing::get(resources))
         .route("/bots/{id}/program", routing::put(save_program))
         .route("/bots/{id}/executions", routing::get(executions))
 }
@@ -260,6 +261,29 @@ async fn intents(
     Ok(Json(intents))
 }
 
+async fn resources(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<BotResources>, ApiError> {
+    let owned = sqlx::query_scalar!(
+        "SELECT id FROM bots WHERE id = $1 AND owner_id = $2",
+        id,
+        user.id,
+    )
+    .fetch_optional(&state.db)
+    .await?;
+    if owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let resources = state
+        .runtime
+        .fetch_resources(id)
+        .await
+        .map_err(runtime_error)?;
+    Ok(Json(resources))
+}
+
 #[derive(Deserialize)]
 struct SaveProgram {
     workspace: serde_json::Value,
@@ -333,7 +357,12 @@ fn check_intents(
         let handler = program
             .handlers
             .iter()
-            .position(|h| matches!(h.trigger, Trigger::MemberJoin {} | Trigger::MemberLeave {}))
+            .position(|h| {
+                matches!(
+                    h.trigger,
+                    Trigger::MemberJoin {} | Trigger::MemberLeave {} | Trigger::MemberUpdate {}
+                )
+            })
             .unwrap_or(0);
         return Err(ApiError::ProgramError {
             message: "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving."
@@ -345,7 +374,12 @@ fn check_intents(
         let handler = program
             .handlers
             .iter()
-            .position(|h| matches!(h.trigger, Trigger::MessageContains { .. }))
+            .position(|h| {
+                matches!(
+                    h.trigger,
+                    Trigger::MessageContains { .. } | Trigger::MessageEdit {}
+                )
+            })
             .unwrap_or(0);
         return Err(ApiError::ProgramError {
             message: "Message Content Intent is disabled in the Discord developer portal. Enable it under Bot before saving."

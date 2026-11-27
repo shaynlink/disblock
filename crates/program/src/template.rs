@@ -2,7 +2,7 @@
 pub const MAX_MESSAGE_LEN: usize = 2000;
 
 /// What a handler knows about the event that triggered it.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Context<'a> {
     pub user_id: Option<u64>,
     pub user_name: Option<&'a str>,
@@ -18,10 +18,36 @@ pub struct Context<'a> {
     pub selected: Option<&'a str>,
     /// Emoji rendered as text (`👍` or `<:name:id>`) when triggered by a reaction.
     pub emoji: Option<&'a str>,
+    /// Modal text input values as `(custom_id, value)`.
+    pub modal_fields: &'a [(String, String)],
+    /// Right-clicked target ID (user ID for user command, message ID for message command).
+    pub target_id: Option<u64>,
+    /// Target mention string (`<@id>` for user command).
+    pub target_mention: Option<&'a str>,
+    /// Target display name (for user command) or author name (for message command).
+    pub target_name: Option<&'a str>,
+    /// Target message content (for message command).
+    pub target_content: Option<&'a str>,
+    /// Target message author ID (for message command).
+    pub target_author_id: Option<u64>,
+    /// Text content on a message event (e.g. edited message).
+    pub message_content: Option<&'a str>,
+    /// Name of a newly created thread.
+    pub thread_name: Option<&'a str>,
+    /// Code of a newly created invite.
+    pub invite_code: Option<&'a str>,
+    /// ID of the AutoMod rule that executed.
+    pub automod_rule_id: Option<u64>,
+    /// Keyword matched by AutoMod.
+    pub automod_keyword: Option<&'a str>,
+    /// Content flagged by AutoMod.
+    pub automod_content: Option<&'a str>,
+    /// Poll answer ID voted for.
+    pub poll_answer_id: Option<u8>,
 }
 
 impl Context<'_> {
-    /// Value of a built-in placeholder such as `user`, `option.NAME` or `selected`.
+    /// Value of a built-in placeholder such as `user`, `option.NAME`, `modal.ID` or `selected`.
     pub(crate) fn builtin(&self, key: &str) -> Option<String> {
         match key {
             "user" | "user.mention" => self.user_id.map(|id| format!("<@{id}>")),
@@ -31,11 +57,29 @@ impl Context<'_> {
             "channel" => self.channel_id.map(|id| format!("<#{id}>")),
             "channel.id" => self.channel_id.map(|id| id.to_string()),
             "message.id" => self.message_id.map(|id| id.to_string()),
+            "message.content" => self.message_content.map(str::to_owned),
             "selected" => self.selected.map(str::to_owned),
             "emoji" => self.emoji.map(str::to_owned),
+            "target" | "target.mention" => self.target_mention.map(str::to_owned),
+            "target.id" => self.target_id.map(|id| id.to_string()),
+            "target.name" => self.target_name.map(str::to_owned),
+            "target.content" => self.target_content.map(str::to_owned),
+            "target.author" => self.target_author_id.map(|id| format!("<@{id}>")),
+            "target.author.id" => self.target_author_id.map(|id| id.to_string()),
+            "thread.name" => self.thread_name.map(str::to_owned),
+            "invite.code" => self.invite_code.map(str::to_owned),
+            "automod.rule_id" => self.automod_rule_id.map(|id| id.to_string()),
+            "automod.keyword" => self.automod_keyword.map(str::to_owned),
+            "automod.content" => self.automod_content.map(str::to_owned),
+            "poll.answer_id" => self.poll_answer_id.map(|id| id.to_string()),
             _ => {
-                let name = key.strip_prefix("option.")?;
-                Some(self.option(name).unwrap_or_default().to_owned())
+                if let Some(name) = key.strip_prefix("option.") {
+                    return Some(self.option(name).unwrap_or_default().to_owned());
+                }
+                if let Some(id) = key.strip_prefix("modal.") {
+                    return Some(self.modal_field(id).unwrap_or_default().to_owned());
+                }
+                None
             }
         }
     }
@@ -44,6 +88,13 @@ impl Context<'_> {
         self.options
             .iter()
             .find(|(option, _)| option == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    pub(crate) fn modal_field(&self, id: &str) -> Option<&str> {
+        self.modal_fields
+            .iter()
+            .find(|(field, _)| field == id)
             .map(|(_, value)| value.as_str())
     }
 }
@@ -102,23 +153,26 @@ mod tests {
             channel_id: Some(9),
             message_id: Some(11),
             options,
-            selected: None,
-            emoji: None,
+            ..Context::default()
         }
     }
 
     #[test]
     fn renders_known_placeholders() {
         let options = [("who".to_owned(), "world".to_owned())];
+        let modal_fields = [("reason".to_owned(), "because".to_owned())];
         let mut ctx = context(&options);
         ctx.selected = Some("blue");
         ctx.emoji = Some("👍");
+        ctx.modal_fields = &modal_fields;
+        ctx.target_id = Some(99);
+        ctx.target_mention = Some("<@99>");
         assert_eq!(
             render(
-                "Hi {user} ({user.name}) in {channel} on {message.id}, hello {option.who}! Picked {selected} {emoji}",
+                "Hi {user} ({user.name}) in {channel} on {message.id}, hello {option.who}! Picked {selected} {emoji} [{modal.reason}] -> {target}",
                 |key| ctx.builtin(key)
             ),
-            "Hi <@42> (ada) in <#9> on 11, hello world! Picked blue 👍"
+            "Hi <@42> (ada) in <#9> on 11, hello world! Picked blue 👍 [because] -> <@99>"
         );
     }
 
@@ -128,7 +182,7 @@ mod tests {
         let lookup = |key: &str| ctx.builtin(key);
         assert_eq!(render("{nope} {user", lookup), "{nope} {user");
         assert_eq!(render("{{user}}", lookup), "{<@42>}");
-        assert_eq!(render("{option.missing}|", lookup), "|");
+        assert_eq!(render("{option.missing}|{modal.missing}|", lookup), "||");
     }
 
     #[test]
