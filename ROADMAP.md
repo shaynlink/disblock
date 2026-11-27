@@ -11,6 +11,9 @@ actions, execution history. Enough for toy bots, not for paying customers.
   triggers) and Pro per bot at €6/month or €50/year (unlimited saved
   variables, scheduled tasks). An "all bots" plan around €15/month comes
   later, once billing supports per-account subscriptions.
+- **Hosting region**: US East (Fly `iad`, Neon `us-east-2`), next to Discord,
+  for a worldwide audience; EU users' data is transferred under the Data
+  Privacy Framework or Standard Contractual Clauses (see the privacy policy).
 - **First use case**: community bots (welcome, roles, levels), then
   moderation, then tickets.
 

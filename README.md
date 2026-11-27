@@ -84,7 +84,8 @@ deployment.
 
 ### 1. Neon
 
-Create a project in an EU region. Use **direct** connection strings (not the
+Create a project in AWS US East, next to the Fly region (`iad`) and Discord.
+Use **direct** connection strings (not the
 `-pooler` ones) with `sslmode=require`, and two roles:
 
 - the owner (`neondb_owner`) for `MIGRATION_DATABASE_URL`: only
@@ -113,7 +114,7 @@ GitHub, Fly and Cloudflare, asking for the values only you know.
 ### 2. Fly.io
 
 ```bash
-fly launch --no-deploy --copy-config --name disblock-api --region cdg
+fly launch --no-deploy --copy-config --name disblock-api --region iad
 fly secrets set \
   DATABASE_URL='postgres://…neon.tech/neondb?sslmode=require' \
   PUBLIC_URL='https://your-domain' \

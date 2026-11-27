@@ -1,7 +1,8 @@
 # Isolated Fly app. Configure separate Fly, Neon, Discord, Stripe test-mode and
 # Sentry credentials; staging must never receive production secrets or bot tokens.
 app = "disblock-api-staging"
-primary_region = "cdg"
+# Ashburn, Virginia: next to Neon (us-east-2) and Discord's US infrastructure.
+primary_region = "iad"
 kill_signal = "SIGTERM"
 kill_timeout = "30s"
 
