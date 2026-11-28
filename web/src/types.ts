@@ -65,6 +65,12 @@ export interface CommandOption {
   required: boolean;
   choices?: CommandOptionChoice[];
   autocomplete?: string[];
+  min_value?: string;
+  max_value?: string;
+  min_length?: string;
+  max_length?: string;
+  channel_types?: ChannelFilter[];
+  file_types?: string[];
 }
 
 /** Where a variable lives: this run only, the member, or the whole server. */
@@ -142,7 +148,14 @@ export interface SelectOption {
 
 export type EntitySelectKind = "user" | "role" | "mentionable" | "channel";
 
-export type ChannelFilter = "text" | "voice" | "announcement" | "forum";
+export type ChannelFilter =
+  | "text"
+  | "voice"
+  | "announcement"
+  | "forum"
+  | "stage"
+  | "category"
+  | "media";
 
 export type ComponentRow =
   | { type: "buttons"; buttons: ButtonSpec[] }

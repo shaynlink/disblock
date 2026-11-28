@@ -104,7 +104,15 @@ const OPTION_KINDS: readonly OptionKind[] = [
 const SCHEDULE_UNITS: readonly ScheduleUnit[] = ["minutes", "hours", "days"];
 const BUTTON_STYLES: readonly ButtonStyle[] = ["primary", "secondary", "success", "danger"];
 const ENTITY_SELECT_KINDS: readonly EntitySelectKind[] = ["user", "role", "mentionable", "channel"];
-const CHANNEL_FILTERS: readonly ChannelFilter[] = ["text", "voice", "announcement", "forum"];
+const CHANNEL_FILTERS: readonly ChannelFilter[] = [
+  "text",
+  "voice",
+  "announcement",
+  "forum",
+  "stage",
+  "category",
+  "media",
+];
 const TEXT_INPUT_STYLES: readonly TextInputStyle[] = ["short", "paragraph"];
 const TARGET_FIELDS: readonly TargetField[] = [
   "id",
@@ -189,6 +197,23 @@ function readOption(block: Blockly.Block): CommandOption | null {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+  const channelTypes = text(block, "CHANNEL_TYPES")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const invalidChannelType = channelTypes.find(
+    (entry) => !CHANNEL_FILTERS.includes(entry as ChannelFilter),
+  );
+  if (invalidChannelType) {
+    throw new GenerateError(
+      `Unknown channel type "${invalidChannelType}". Use text, voice, announcement, forum, stage, category, or media.`,
+      block.id,
+    );
+  }
+  const fileTypes = text(block, "FILE_TYPES")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   return {
     name: text(block, "NAME"),
     description: text(block, "DESCRIPTION"),
@@ -196,6 +221,12 @@ function readOption(block: Blockly.Block): CommandOption | null {
     required: checked(block, "REQUIRED"),
     ...(choices.length > 0 ? { choices } : {}),
     ...(rawAutocomplete.length > 0 ? { autocomplete: rawAutocomplete } : {}),
+    ...(optionalText(block, "MIN_VALUE") ? { min_value: optionalText(block, "MIN_VALUE") } : {}),
+    ...(optionalText(block, "MAX_VALUE") ? { max_value: optionalText(block, "MAX_VALUE") } : {}),
+    ...(optionalText(block, "MIN_LENGTH") ? { min_length: optionalText(block, "MIN_LENGTH") } : {}),
+    ...(optionalText(block, "MAX_LENGTH") ? { max_length: optionalText(block, "MAX_LENGTH") } : {}),
+    ...(channelTypes.length > 0 ? { channel_types: channelTypes as ChannelFilter[] } : {}),
+    ...(fileTypes.length > 0 ? { file_types: fileTypes } : {}),
   };
 }
 

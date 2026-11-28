@@ -521,8 +521,11 @@ export function Editor({
           </div>
         </div>
       )}
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div className="min-h-[560px] min-w-0 flex-1" ref={container} />
+      <div className="flex min-h-0 flex-col lg:flex-1 lg:flex-row">
+        <div
+          className="relative h-[560px] min-w-0 lg:min-h-[560px] lg:flex-1 lg:h-auto [&>.injectionDiv]:h-full [&>.injectionDiv]:w-full"
+          ref={container}
+        />
         <DiscordPreview bot={bot} program={preview.program} error={preview.error} />
       </div>
       <TemplateDialog

@@ -116,6 +116,24 @@ pub struct CommandOption {
     pub choices: Vec<CommandOptionChoiceSpec>,
     #[serde(default)]
     pub autocomplete: Vec<String>,
+    /// Inclusive minimum accepted value for an integer or decimal option.
+    #[serde(default)]
+    pub min_value: Option<String>,
+    /// Inclusive maximum accepted value for an integer or decimal option.
+    #[serde(default)]
+    pub max_value: Option<String>,
+    /// Minimum number of characters accepted for a text option.
+    #[serde(default)]
+    pub min_length: Option<String>,
+    /// Maximum number of characters accepted for a text option.
+    #[serde(default)]
+    pub max_length: Option<String>,
+    /// Channel kinds presented for a channel option. An empty list permits all kinds.
+    #[serde(default)]
+    pub channel_types: Vec<ChannelFilter>,
+    /// Attachment categories or dot-prefixed file extensions accepted by Discord.
+    #[serde(default)]
+    pub file_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -490,13 +508,16 @@ pub enum EntitySelectKind {
     Channel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelFilter {
     Text,
     Voice,
     Announcement,
     Forum,
+    Stage,
+    Category,
+    Media,
 }
 
 /// One action row below a message: up to 5 buttons or 1 select menu.

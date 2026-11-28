@@ -6,6 +6,7 @@ use twilight_model::application::command::{
     Command, CommandOption as TwilightCommandOption, CommandType,
 };
 use twilight_model::application::interaction::InteractionContextType;
+use twilight_model::channel::ChannelType;
 use twilight_util::builder::command::{
     AttachmentBuilder, BooleanBuilder, ChannelBuilder, CommandBuilder, IntegerBuilder,
     MentionableBuilder, NumberBuilder, RoleBuilder, StringBuilder, SubCommandBuilder,
@@ -69,6 +70,20 @@ fn build_option(option: &CommandOption) -> TwilightCommandOption {
     match option.kind {
         OptionKind::String => {
             let mut builder = StringBuilder::new(name, description).required(option.required);
+            if let Some(min) = option
+                .min_length
+                .as_deref()
+                .and_then(|value| value.trim().parse::<u16>().ok())
+            {
+                builder = builder.min_length(min);
+            }
+            if let Some(max) = option
+                .max_length
+                .as_deref()
+                .and_then(|value| value.trim().parse::<u16>().ok())
+            {
+                builder = builder.max_length(max);
+            }
             if has_autocomplete {
                 builder = builder.autocomplete(true);
             } else if !option.choices.is_empty() {
@@ -83,6 +98,20 @@ fn build_option(option: &CommandOption) -> TwilightCommandOption {
         }
         OptionKind::Integer => {
             let mut builder = IntegerBuilder::new(name, description).required(option.required);
+            if let Some(min) = option
+                .min_value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<i64>().ok())
+            {
+                builder = builder.min_value(min);
+            }
+            if let Some(max) = option
+                .max_value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<i64>().ok())
+            {
+                builder = builder.max_value(max);
+            }
             if has_autocomplete {
                 builder = builder.autocomplete(true);
             } else if !option.choices.is_empty() {
@@ -104,6 +133,22 @@ fn build_option(option: &CommandOption) -> TwilightCommandOption {
         }
         OptionKind::Number => {
             let mut builder = NumberBuilder::new(name, description).required(option.required);
+            if let Some(min) = option
+                .min_value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+            {
+                builder = builder.min_value(min);
+            }
+            if let Some(max) = option
+                .max_value
+                .as_deref()
+                .and_then(|value| value.trim().parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+            {
+                builder = builder.max_value(max);
+            }
             if has_autocomplete {
                 builder = builder.autocomplete(true);
             } else if !option.choices.is_empty() {
@@ -130,18 +175,37 @@ fn build_option(option: &CommandOption) -> TwilightCommandOption {
         OptionKind::User => UserBuilder::new(name, description)
             .required(option.required)
             .build(),
-        OptionKind::Channel => ChannelBuilder::new(name, description)
-            .required(option.required)
-            .build(),
+        OptionKind::Channel => {
+            let mut builder = ChannelBuilder::new(name, description).required(option.required);
+            if !option.channel_types.is_empty() {
+                builder =
+                    builder.channel_types(option.channel_types.iter().map(|filter| match filter {
+                        disblock_program::ChannelFilter::Text => ChannelType::GuildText,
+                        disblock_program::ChannelFilter::Voice => ChannelType::GuildVoice,
+                        disblock_program::ChannelFilter::Announcement => {
+                            ChannelType::GuildAnnouncement
+                        }
+                        disblock_program::ChannelFilter::Forum => ChannelType::GuildForum,
+                        disblock_program::ChannelFilter::Stage => ChannelType::GuildStageVoice,
+                        disblock_program::ChannelFilter::Category => ChannelType::GuildCategory,
+                        disblock_program::ChannelFilter::Media => ChannelType::GuildMedia,
+                    }));
+            }
+            builder.build()
+        }
         OptionKind::Role => RoleBuilder::new(name, description)
             .required(option.required)
             .build(),
         OptionKind::Mentionable => MentionableBuilder::new(name, description)
             .required(option.required)
             .build(),
-        OptionKind::Attachment => AttachmentBuilder::new(name, description)
-            .required(option.required)
-            .build(),
+        OptionKind::Attachment => {
+            let mut builder = AttachmentBuilder::new(name, description).required(option.required);
+            if !option.file_types.is_empty() {
+                builder = builder.file_types(option.file_types.iter().map(String::as_str));
+            }
+            builder.build()
+        }
     }
 }
 
@@ -149,7 +213,7 @@ fn build_option(option: &CommandOption) -> TwilightCommandOption {
 mod tests {
     use super::*;
     use disblock_program::{CommandOption, CommandOptionChoiceSpec, SlashSubcommandGroupSpec};
-    use twilight_model::application::command::CommandOptionType;
+    use twilight_model::application::command::{CommandOptionType, CommandOptionValue};
 
     #[test]
     fn registers_every_supported_discord_option_kind() {
@@ -175,6 +239,31 @@ mod tests {
                 required: false,
                 choices: Vec::new(),
                 autocomplete: Vec::new(),
+                min_value: match kind {
+                    OptionKind::Integer => Some("-5".to_owned()),
+                    OptionKind::Number => Some("-1.5".to_owned()),
+                    _ => None,
+                },
+                max_value: match kind {
+                    OptionKind::Integer => Some("10".to_owned()),
+                    OptionKind::Number => Some("3.5".to_owned()),
+                    _ => None,
+                },
+                min_length: (kind == OptionKind::String).then(|| "2".to_owned()),
+                max_length: (kind == OptionKind::String).then(|| "32".to_owned()),
+                channel_types: if kind == OptionKind::Channel {
+                    vec![
+                        disblock_program::ChannelFilter::Text,
+                        disblock_program::ChannelFilter::Forum,
+                    ]
+                } else {
+                    Vec::new()
+                },
+                file_types: if kind == OptionKind::Attachment {
+                    vec!["image".to_owned(), ".pdf".to_owned()]
+                } else {
+                    Vec::new()
+                },
             })
             .collect(),
             subcommands: Vec::new(),
@@ -200,6 +289,32 @@ mod tests {
                 CommandOptionType::Attachment,
             ],
         );
+        assert_eq!(commands[0].options[0].min_length, Some(2));
+        assert_eq!(commands[0].options[0].max_length, Some(32));
+        assert_eq!(
+            commands[0].options[1].min_value,
+            Some(CommandOptionValue::Integer(-5))
+        );
+        assert_eq!(
+            commands[0].options[1].max_value,
+            Some(CommandOptionValue::Integer(10))
+        );
+        assert_eq!(
+            commands[0].options[2].min_value,
+            Some(CommandOptionValue::Number(-1.5))
+        );
+        assert_eq!(
+            commands[0].options[2].max_value,
+            Some(CommandOptionValue::Number(3.5))
+        );
+        assert_eq!(
+            commands[0].options[5].channel_types,
+            Some(vec![ChannelType::GuildText, ChannelType::GuildForum])
+        );
+        assert_eq!(
+            commands[0].options[8].file_types,
+            Some(vec!["image".to_owned(), ".pdf".to_owned()])
+        );
     }
 
     #[test]
@@ -221,6 +336,12 @@ mod tests {
                         value: "fast".to_owned(),
                     }],
                     autocomplete: Vec::new(),
+                    min_value: None,
+                    max_value: None,
+                    min_length: None,
+                    max_length: None,
+                    channel_types: Vec::new(),
+                    file_types: Vec::new(),
                 }],
             }],
             groups: vec![SlashSubcommandGroupSpec {
@@ -236,6 +357,12 @@ mod tests {
                         required: false,
                         choices: Vec::new(),
                         autocomplete: vec!["vip".to_owned(), "mod".to_owned()],
+                        min_value: None,
+                        max_value: None,
+                        min_length: None,
+                        max_length: None,
+                        channel_types: Vec::new(),
+                        file_types: Vec::new(),
                     }],
                 }],
             }],

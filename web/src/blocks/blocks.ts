@@ -319,12 +319,27 @@ const definitions = [
     ],
     message2: "choices %1",
     args2: [{ type: "input_statement", name: "CHOICES", check: "option_choice" }],
+    message3: "minimum %1 maximum %2",
+    args3: [
+      { type: "field_input", name: "MIN_VALUE", text: "" },
+      { type: "field_input", name: "MAX_VALUE", text: "" },
+    ],
+    message4: "min length %1 max length %2",
+    args4: [
+      { type: "field_input", name: "MIN_LENGTH", text: "" },
+      { type: "field_input", name: "MAX_LENGTH", text: "" },
+    ],
+    message5: "channel types %1 attachment types %2",
+    args5: [
+      { type: "field_input", name: "CHANNEL_TYPES", text: "" },
+      { type: "field_input", name: "FILE_TYPES", text: "" },
+    ],
     previousStatement: "option",
     nextStatement: "option",
     colour: OPTION_COLOUR,
     extensions: [NAME_EXTENSION],
     tooltip:
-      "Use its value in messages with {option.NAME}. Add optional fixed choices or comma-separated autocomplete suggestions.",
+      "Use its value in messages with {option.NAME}. Add fixed choices or comma-separated autocomplete suggestions. Bounds apply to number and text options; channel and attachment filters are comma-separated (for example text,forum or image,.pdf).",
   },
   {
     type: "command_option_choice",
@@ -796,6 +811,9 @@ const definitions = [
           ["voice only", "voice"],
           ["announcements", "announcement"],
           ["forums", "forum"],
+          ["stage channels", "stage"],
+          ["categories", "category"],
+          ["media channels", "media"],
         ],
       },
       { type: "field_number", name: "MIN", value: 1, min: 1, max: 25, precision: 1 },

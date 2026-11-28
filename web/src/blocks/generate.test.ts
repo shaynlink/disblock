@@ -115,6 +115,8 @@ describe("generateProgram", () => {
                     KIND: "number",
                     REQUIRED: true,
                     DESCRIPTION: "A decimal",
+                    MIN_VALUE: "-1.5",
+                    MAX_VALUE: "3.5",
                   },
                   next: {
                     block: {
@@ -124,6 +126,7 @@ describe("generateProgram", () => {
                         KIND: "channel",
                         REQUIRED: false,
                         DESCRIPTION: "A channel",
+                        CHANNEL_TYPES: "text, forum",
                       },
                       next: {
                         block: {
@@ -151,6 +154,7 @@ describe("generateProgram", () => {
                                     KIND: "attachment",
                                     REQUIRED: false,
                                     DESCRIPTION: "A file",
+                                    FILE_TYPES: "image, .pdf",
                                   },
                                 },
                               },
@@ -179,6 +183,9 @@ describe("generateProgram", () => {
       "mentionable",
       "attachment",
     ]);
+    expect(trigger.options[0]).toMatchObject({ min_value: "-1.5", max_value: "3.5" });
+    expect(trigger.options[1]).toMatchObject({ channel_types: ["text", "forum"] });
+    expect(trigger.options[4]).toMatchObject({ file_types: ["image", ".pdf"] });
   });
 
   it("generates moderation actions with a member template", () => {

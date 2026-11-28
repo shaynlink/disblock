@@ -1902,6 +1902,9 @@ fn build_component_row(row: &RenderedComponentRow) -> Result<Component, String> 
                                 ChannelFilter::Voice => ChannelType::GuildVoice,
                                 ChannelFilter::Announcement => ChannelType::GuildAnnouncement,
                                 ChannelFilter::Forum => ChannelType::GuildForum,
+                                ChannelFilter::Stage => ChannelType::GuildStageVoice,
+                                ChannelFilter::Category => ChannelType::GuildCategory,
+                                ChannelFilter::Media => ChannelType::GuildMedia,
                             })
                             .collect(),
                     )

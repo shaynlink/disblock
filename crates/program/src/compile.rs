@@ -20,6 +20,11 @@ const MAX_CONTEXT_COMMANDS: usize = 5;
 const MAX_SCHEDULES: usize = 20;
 const MAX_OPTIONS: usize = 25;
 const MAX_CHOICES: usize = 25;
+const MAX_OPTION_STRING_LENGTH: u16 = 6_000;
+const MAX_ATTACHMENT_FILE_TYPES: usize = 10;
+const MIN_INTEGER_OPTION_VALUE: i64 = -9_007_199_254_740_991;
+const MAX_INTEGER_OPTION_VALUE: i64 = 9_007_199_254_740_991;
+const MAX_NUMBER_OPTION_VALUE: f64 = 9_007_199_254_740_992.0;
 /// Statements in one handler, branches included.
 const MAX_STEPS: usize = 100;
 /// Nesting of `if` blocks.
@@ -218,6 +223,14 @@ pub enum HandlerError {
     ChoicesAndAutocompleteConflict(String),
     #[error("option `{0}` has an invalid choice `{1}`")]
     InvalidChoice(String, String),
+    #[error("option `{0}` only supports {1}")]
+    UnsupportedOptionConstraint(String, &'static str),
+    #[error("option `{0}` has an invalid {1}")]
+    InvalidOptionConstraint(String, &'static str),
+    #[error("option `{0}` has a minimum greater than its maximum {1}")]
+    InvalidOptionConstraintBounds(String, &'static str),
+    #[error("option `{0}` can filter at most {MAX_ATTACHMENT_FILE_TYPES} attachment types")]
+    TooManyAttachmentFileTypes(String),
     #[error("the searched text must be 1-{MAX_PATTERN_LEN} characters")]
     InvalidPattern,
     #[error("`{0}` is not a unicode emoji or a custom emoji written `name:id`")]
@@ -2705,9 +2718,162 @@ fn check_options(options: &[CommandOption]) -> Result<(), (usize, HandlerError)>
             ));
         }
         check_option_choices_and_autocomplete(option).map_err(|reason| (index, reason))?;
+        check_option_constraints(option).map_err(|reason| (index, reason))?;
         optional_seen |= !option.required;
     }
     Ok(())
+}
+
+fn check_option_constraints(option: &CommandOption) -> Result<(), HandlerError> {
+    let has_value_bounds = option.min_value.is_some() || option.max_value.is_some();
+    let has_length_bounds = option.min_length.is_some() || option.max_length.is_some();
+
+    if has_value_bounds && !matches!(option.kind, OptionKind::Integer | OptionKind::Number) {
+        return Err(HandlerError::UnsupportedOptionConstraint(
+            option.name.clone(),
+            "minimum and maximum values for integer or decimal options",
+        ));
+    }
+    if has_length_bounds && option.kind != OptionKind::String {
+        return Err(HandlerError::UnsupportedOptionConstraint(
+            option.name.clone(),
+            "minimum and maximum lengths for text options",
+        ));
+    }
+    if !option.channel_types.is_empty() && option.kind != OptionKind::Channel {
+        return Err(HandlerError::UnsupportedOptionConstraint(
+            option.name.clone(),
+            "channel type filters for channel options",
+        ));
+    }
+    if !option.file_types.is_empty() && option.kind != OptionKind::Attachment {
+        return Err(HandlerError::UnsupportedOptionConstraint(
+            option.name.clone(),
+            "attachment type filters for attachment options",
+        ));
+    }
+
+    match option.kind {
+        OptionKind::Integer => {
+            let min = option
+                .min_value
+                .as_deref()
+                .map(|value| parse_integer_option_bound(value, option, "minimum value"))
+                .transpose()?;
+            let max = option
+                .max_value
+                .as_deref()
+                .map(|value| parse_integer_option_bound(value, option, "maximum value"))
+                .transpose()?;
+            if min.zip(max).is_some_and(|(min, max)| min > max) {
+                return Err(HandlerError::InvalidOptionConstraintBounds(
+                    option.name.clone(),
+                    "value",
+                ));
+            }
+        }
+        OptionKind::Number => {
+            let min = option
+                .min_value
+                .as_deref()
+                .map(|value| parse_number_option_bound(value, option, "minimum value"))
+                .transpose()?;
+            let max = option
+                .max_value
+                .as_deref()
+                .map(|value| parse_number_option_bound(value, option, "maximum value"))
+                .transpose()?;
+            if min.zip(max).is_some_and(|(min, max)| min > max) {
+                return Err(HandlerError::InvalidOptionConstraintBounds(
+                    option.name.clone(),
+                    "value",
+                ));
+            }
+        }
+        OptionKind::String => {
+            let min = option
+                .min_length
+                .as_deref()
+                .map(|value| parse_string_option_bound(value, option, "minimum length", true))
+                .transpose()?;
+            let max = option
+                .max_length
+                .as_deref()
+                .map(|value| parse_string_option_bound(value, option, "maximum length", false))
+                .transpose()?;
+            if min.zip(max).is_some_and(|(min, max)| min > max) {
+                return Err(HandlerError::InvalidOptionConstraintBounds(
+                    option.name.clone(),
+                    "length",
+                ));
+            }
+        }
+        OptionKind::Attachment => {
+            if option.file_types.len() > MAX_ATTACHMENT_FILE_TYPES {
+                return Err(HandlerError::TooManyAttachmentFileTypes(
+                    option.name.clone(),
+                ));
+            }
+            let mut seen = HashSet::with_capacity(option.file_types.len());
+            for file_type in &option.file_types {
+                let trimmed = file_type.trim();
+                let is_category = matches!(trimmed, "image" | "video" | "audio");
+                let is_extension = trimmed.starts_with('.')
+                    && trimmed.len() > 1
+                    && !trimmed.contains(char::is_whitespace)
+                    && !trimmed.contains(['/', '\\']);
+                if !(is_category || is_extension) || !seen.insert(trimmed) {
+                    return Err(HandlerError::InvalidOptionConstraint(
+                        option.name.clone(),
+                        "attachment type filter",
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn parse_integer_option_bound(
+    value: &str,
+    option: &CommandOption,
+    name: &'static str,
+) -> Result<i64, HandlerError> {
+    let parsed = value
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|value| (MIN_INTEGER_OPTION_VALUE..=MAX_INTEGER_OPTION_VALUE).contains(value));
+    parsed.ok_or_else(|| HandlerError::InvalidOptionConstraint(option.name.clone(), name))
+}
+
+fn parse_number_option_bound(
+    value: &str,
+    option: &CommandOption,
+    name: &'static str,
+) -> Result<f64, HandlerError> {
+    let parsed = value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && value.abs() <= MAX_NUMBER_OPTION_VALUE);
+    parsed.ok_or_else(|| HandlerError::InvalidOptionConstraint(option.name.clone(), name))
+}
+
+fn parse_string_option_bound(
+    value: &str,
+    option: &CommandOption,
+    name: &'static str,
+    allows_zero: bool,
+) -> Result<u16, HandlerError> {
+    let parsed = value
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|value| *value <= MAX_OPTION_STRING_LENGTH && (allows_zero || *value > 0));
+    parsed.ok_or_else(|| HandlerError::InvalidOptionConstraint(option.name.clone(), name))
 }
 
 fn check_option_choices_and_autocomplete(option: &CommandOption) -> Result<(), HandlerError> {
@@ -3268,6 +3434,12 @@ mod tests {
             required,
             choices: Vec::new(),
             autocomplete: Vec::new(),
+            min_value: None,
+            max_value: None,
+            min_length: None,
+            max_length: None,
+            channel_types: Vec::new(),
+            file_types: Vec::new(),
         };
         let program = Program {
             handlers: vec![Handler {
@@ -3286,6 +3458,27 @@ mod tests {
                 reason: HandlerError::RequiredAfterOptional("b".to_owned()),
             })
         );
+    }
+
+    #[test]
+    fn validates_discord_option_constraints() {
+        let program: Program = serde_json::from_str(
+            r#"{"handlers":[{"trigger":{"type":"slash_command","name":"configure","description":"Configure the bot","options":[{"name":"title","description":"A title","kind":"string","min_length":"2","max_length":"64"},{"name":"count","description":"A count","kind":"integer","min_value":"1","max_value":"10"},{"name":"ratio","description":"A ratio","kind":"number","min_value":"-1.5","max_value":"3.5"},{"name":"destination","description":"A channel","kind":"channel","channel_types":["text","forum","stage","category","media"]},{"name":"file","description":"A file","kind":"attachment","file_types":["image",".pdf"]}]},"actions":[{"type":"reply","content":"Done"}]}]}"#,
+        )
+        .expect("valid program");
+        assert!(program.compile().is_ok());
+
+        let invalid: Program = serde_json::from_str(
+            r#"{"handlers":[{"trigger":{"type":"slash_command","name":"configure","description":"Configure the bot","options":[{"name":"count","description":"A count","kind":"integer","min_value":"10","max_value":"1"}]},"actions":[{"type":"reply","content":"Done"}]}]}"#,
+        )
+        .expect("valid JSON");
+        assert!(matches!(
+            invalid.compile(),
+            Err(CompileError::Handler {
+                reason: HandlerError::InvalidOptionConstraintBounds(_, "value"),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -3701,6 +3894,12 @@ mod tests {
                                 value: "low".to_owned(),
                             }],
                             autocomplete: Vec::new(),
+                            min_value: None,
+                            max_value: None,
+                            min_length: None,
+                            max_length: None,
+                            channel_types: Vec::new(),
+                            file_types: Vec::new(),
                         }],
                     },
                     actions: vec![Statement::ShowModal {
