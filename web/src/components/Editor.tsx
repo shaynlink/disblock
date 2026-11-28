@@ -12,6 +12,7 @@ import {
 import { useBlocker, useSearchParams } from "react-router";
 import { ApiError, api } from "../api.ts";
 import { createTheme, registerBlocks, starterWorkspace, toolbox } from "../blocks/blocks.ts";
+import { setDiscordPickerResources } from "../blocks/discordPicker.ts";
 import { type BotTemplate, hasCustomWorkspaceBlocks, insertTemplate } from "../blocks/templates.ts";
 import {
   GenerateError,
@@ -22,7 +23,7 @@ import {
   resolveErrorBlockId,
 } from "../blocks/generate.ts";
 import { buttonClass } from "../lib/styles.ts";
-import type { BotDetail, BotIntents, Program } from "../types.ts";
+import type { BotDetail, BotIntents, BotResources, Program } from "../types.ts";
 import { DiscordPreview } from "./DiscordPreview.tsx";
 import { TemplateDialog } from "./TemplateDialog.tsx";
 import { Button } from "./ui.tsx";
@@ -74,6 +75,8 @@ export function Editor({
   const [dirty, setDirty] = useState(false);
   const [save, setSave] = useState<SaveState>({ kind: "idle" });
   const [intentsState, setIntentsState] = useState<IntentsState>({ kind: "loading" });
+  const [resources, setResources] = useState<BotResources | null>(null);
+  const [refreshingResources, setRefreshingResources] = useState(false);
   const [missingIntents, setMissingIntents] = useState<MissingIntent[]>([]);
   const [checkingIntents, setCheckingIntents] = useState(false);
   const [preview, setPreview] = useState<PreviewState>({ program: null, error: null });
@@ -214,6 +217,24 @@ export function Editor({
         syncIntentWarnings(editor, next);
       });
 
+    api
+      .botResources(bot.id)
+      .then((loadedResources) => {
+        if (!active) {
+          return;
+        }
+        setResources(loadedResources);
+        setDiscordPickerResources(loadedResources);
+        editor.render();
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setResources(null);
+        setDiscordPickerResources(null);
+      });
+
     const trackedIntentWarnings = intentWarningBlocks.current;
 
     return () => {
@@ -221,10 +242,25 @@ export function Editor({
       resize.disconnect();
       editor.dispose();
       workspace.current = null;
+      setDiscordPickerResources(null);
       trackedIntentWarnings.clear();
       saveWarningBlock.current = null;
     };
   }, [bot.id, clearSaveWarning, syncIntentWarnings, syncPreview]);
+
+  const refreshResources = useCallback(async () => {
+    setRefreshingResources(true);
+    try {
+      const loaded = await api.botResources(bot.id);
+      setResources(loaded);
+      setDiscordPickerResources(loaded);
+      workspace.current?.render();
+    } catch {
+      // Keep current resources if Discord is temporarily unreachable.
+    } finally {
+      setRefreshingResources(false);
+    }
+  }, [bot.id]);
 
   const recheckIntents = useCallback(async () => {
     const editor = workspace.current;
@@ -272,7 +308,9 @@ export function Editor({
       (handler) =>
         handler.trigger.type === "member_join" ||
         handler.trigger.type === "member_leave" ||
-        handler.trigger.type === "message_contains",
+        handler.trigger.type === "member_update" ||
+        handler.trigger.type === "message_contains" ||
+        handler.trigger.type === "message_edit",
     );
     if (needsPrivilegedIntent) {
       setSave({ kind: "checking" });
@@ -428,6 +466,17 @@ export function Editor({
             </span>
           )}
           {dirty && !busy && <span className="text-sm text-muted-foreground">Unsaved changes</span>}
+          <Button
+            variant="outline"
+            onClick={refreshResources}
+            disabled={busy || refreshingResources}
+            title="Reload Discord servers, channels, and roles"
+          >
+            <RefreshCw className={refreshingResources ? "animate-spin" : undefined} />
+            {resources
+              ? `${resources.guilds.length} server${resources.guilds.length === 1 ? "" : "s"}`
+              : "Sync Discord"}
+          </Button>
           <Button variant="outline" onClick={openTemplates} disabled={busy}>
             <LayoutTemplate />
             Templates
@@ -472,8 +521,11 @@ export function Editor({
           </div>
         </div>
       )}
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <div className="min-h-[560px] min-w-0 flex-1" ref={container} />
+      <div className="flex min-h-0 flex-col lg:flex-1 lg:flex-row">
+        <div
+          className="relative h-[560px] min-w-0 lg:min-h-[560px] lg:flex-1 lg:h-auto [&>.injectionDiv]:h-full [&>.injectionDiv]:w-full"
+          ref={container}
+        />
         <DiscordPreview bot={bot} program={preview.program} error={preview.error} />
       </div>
       <TemplateDialog
@@ -482,6 +534,7 @@ export function Editor({
         onApply={applyTemplate}
         hasCustomBlocks={hasCustomBlocks}
         intents={intentsState.kind === "ready" ? intentsState.intents : null}
+        resources={resources}
       />
     </div>
   );

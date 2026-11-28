@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import { AlertTriangle, Check, Layers, Plus, Replace } from "lucide-react";
 import { BOT_TEMPLATES, type BotTemplate, type TemplateId } from "../blocks/templates.ts";
-import type { BotIntents } from "../types.ts";
+import type { BotIntents, BotResources } from "../types.ts";
 import { Badge, Button, Dialog, Input } from "./ui.tsx";
 
 const INTENT_LABELS: Record<"members" | "message_content", string> = {
@@ -23,6 +23,7 @@ export function TemplateDialog({
   onApply,
   hasCustomBlocks,
   intents,
+  resources,
 }: {
   open: boolean;
   onClose: () => void;
@@ -33,6 +34,7 @@ export function TemplateDialog({
   ) => void;
   hasCustomBlocks: boolean;
   intents: BotIntents | null;
+  resources: BotResources | null;
 }) {
   const [selectedId, setSelectedId] = useState<TemplateId>("welcome");
   const [valuesByTemplate, setValuesByTemplate] = useState<
@@ -174,18 +176,56 @@ export function TemplateDialog({
               <div>
                 <h3 className="text-sm font-medium">Quick setup (optional)</h3>
                 <p className="text-xs text-muted-foreground">
-                  Paste your Discord IDs now, or leave them empty to edit directly on the blocks.
+                  Pick from your bot&apos;s Discord servers or paste IDs now — you can edit them on
+                  the blocks anytime.
                 </p>
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 {selected.fields.map((field) => {
                   const inputId = `${idPrefix}-${selected.id}-${field.key}`;
                   const hintId = `${inputId}-hint`;
+                  const hasPicker =
+                    field.kind &&
+                    resources &&
+                    resources.guilds.some((guild) =>
+                      field.kind === "channel" ? guild.channels.length > 0 : guild.roles.length > 0,
+                    );
                   return (
                     <div key={field.key} className="grid gap-1">
                       <label htmlFor={inputId} className="text-xs font-medium text-foreground">
                         {field.label}
                       </label>
+                      {hasPicker && (
+                        <select
+                          aria-label={`Pick ${field.label}`}
+                          value={values[field.key] ?? ""}
+                          onChange={(event) => {
+                            if (event.target.value) {
+                              updateField(field.key, event.target.value);
+                            }
+                          }}
+                          className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm shadow-xs focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+                        >
+                          <option value="">
+                            Choose a {field.kind === "channel" ? "channel" : "role"}…
+                          </option>
+                          {resources.guilds.map((guild) => {
+                            const items = field.kind === "channel" ? guild.channels : guild.roles;
+                            if (items.length === 0) {
+                              return null;
+                            }
+                            return (
+                              <optgroup key={guild.id} label={guild.name}>
+                                {items.map((item) => (
+                                  <option key={item.id} value={item.id}>
+                                    {field.kind === "channel" ? `#${item.name}` : `@${item.name}`}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            );
+                          })}
+                        </select>
+                      )}
                       <Input
                         id={inputId}
                         value={values[field.key] ?? ""}

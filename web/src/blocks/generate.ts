@@ -1,25 +1,34 @@
 import type * as Blockly from "blockly";
 import type {
+  AttachmentSpec,
   BotIntents,
   ButtonSpec,
   ButtonStyle,
+  ChannelFilter,
   CommandOption,
+  CommandOptionChoice,
   CompareOp,
   ComponentRow,
   Embed,
   EmbedAuthor,
   EmbedField,
   EmbedFooter,
+  EntitySelectKind,
   ErrorLocation,
   Expr,
   Handler,
   MathOp,
+  ModalInputSpec,
   OptionKind,
+  PollAnswerSpec,
+  PollSpec,
   Program,
   ScheduleUnit,
   Scope,
   SelectOption,
   Statement,
+  TargetField,
+  TextInputStyle,
   Trigger,
 } from "../types.ts";
 
@@ -81,9 +90,38 @@ export interface MissingIntent {
   message: string;
 }
 
-const OPTION_KINDS: readonly OptionKind[] = ["string", "integer", "boolean", "user"];
+const OPTION_KINDS: readonly OptionKind[] = [
+  "string",
+  "integer",
+  "number",
+  "boolean",
+  "user",
+  "channel",
+  "role",
+  "mentionable",
+  "attachment",
+];
 const SCHEDULE_UNITS: readonly ScheduleUnit[] = ["minutes", "hours", "days"];
 const BUTTON_STYLES: readonly ButtonStyle[] = ["primary", "secondary", "success", "danger"];
+const ENTITY_SELECT_KINDS: readonly EntitySelectKind[] = ["user", "role", "mentionable", "channel"];
+const CHANNEL_FILTERS: readonly ChannelFilter[] = [
+  "text",
+  "voice",
+  "announcement",
+  "forum",
+  "stage",
+  "category",
+  "media",
+];
+const TEXT_INPUT_STYLES: readonly TextInputStyle[] = ["short", "paragraph"];
+const TARGET_FIELDS: readonly TargetField[] = [
+  "id",
+  "mention",
+  "name",
+  "content",
+  "author_id",
+  "author_mention",
+];
 const SCOPES: readonly Scope[] = ["local", "member", "server"];
 const MATH_OPS: readonly MathOp[] = ["add", "subtract", "multiply", "divide", "modulo"];
 const COMPARE_OPS: readonly CompareOp[] = [
@@ -128,6 +166,9 @@ function oneOf<T extends string>(block: Blockly.Block, field: string, allowed: r
 
 /** Enabled blocks stacked under `input`, top to bottom. */
 function stack(block: Blockly.Block, input: string): Blockly.Block[] {
+  if (!block.getInput(input)) {
+    return [];
+  }
   const blocks: Blockly.Block[] = [];
   for (let current = block.getInputTargetBlock(input); current; current = current.getNextBlock()) {
     if (current.isEnabled()) {
@@ -137,16 +178,72 @@ function stack(block: Blockly.Block, input: string): Blockly.Block[] {
   return blocks;
 }
 
+function readOptionChoice(block: Blockly.Block): CommandOptionChoice {
+  if (block.type !== "command_option_choice") {
+    throw new GenerateError("Only choice blocks can go in the choices slot.", block.id);
+  }
+  return {
+    name: text(block, "NAME"),
+    value: text(block, "VALUE"),
+  };
+}
+
 function readOption(block: Blockly.Block): CommandOption | null {
   if (block.type !== "command_option") {
     return null;
   }
+  const choices = stack(block, "CHOICES").map(readOptionChoice);
+  const rawAutocomplete = text(block, "AUTOCOMPLETE")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const channelTypes = text(block, "CHANNEL_TYPES")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const invalidChannelType = channelTypes.find(
+    (entry) => !CHANNEL_FILTERS.includes(entry as ChannelFilter),
+  );
+  if (invalidChannelType) {
+    throw new GenerateError(
+      `Unknown channel type "${invalidChannelType}". Use text, voice, announcement, forum, stage, category, or media.`,
+      block.id,
+    );
+  }
+  const fileTypes = text(block, "FILE_TYPES")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   return {
     name: text(block, "NAME"),
     description: text(block, "DESCRIPTION"),
     kind: oneOf(block, "KIND", OPTION_KINDS),
     required: checked(block, "REQUIRED"),
+    ...(choices.length > 0 ? { choices } : {}),
+    ...(rawAutocomplete.length > 0 ? { autocomplete: rawAutocomplete } : {}),
+    ...(optionalText(block, "MIN_VALUE") ? { min_value: optionalText(block, "MIN_VALUE") } : {}),
+    ...(optionalText(block, "MAX_VALUE") ? { max_value: optionalText(block, "MAX_VALUE") } : {}),
+    ...(optionalText(block, "MIN_LENGTH") ? { min_length: optionalText(block, "MIN_LENGTH") } : {}),
+    ...(optionalText(block, "MAX_LENGTH") ? { max_length: optionalText(block, "MAX_LENGTH") } : {}),
+    ...(channelTypes.length > 0 ? { channel_types: channelTypes as ChannelFilter[] } : {}),
+    ...(fileTypes.length > 0 ? { file_types: fileTypes } : {}),
   };
+}
+
+function readOptions(block: Blockly.Block): {
+  options: CommandOption[];
+  optionBlockIds: string[];
+} {
+  const options: CommandOption[] = [];
+  const optionBlockIds: string[] = [];
+  for (const optBlock of stack(block, "OPTIONS")) {
+    const option = readOption(optBlock);
+    if (option !== null) {
+      options.push(option);
+      optionBlockIds.push(optBlock.id);
+    }
+  }
+  return { options, optionBlockIds };
 }
 
 function readTriggerWithMap(
@@ -154,15 +251,7 @@ function readTriggerWithMap(
 ): { trigger: Trigger; optionBlockIds: string[] } | null {
   switch (block.type) {
     case "slash_command": {
-      const options: CommandOption[] = [];
-      const optionBlockIds: string[] = [];
-      for (const optBlock of stack(block, "OPTIONS")) {
-        const option = readOption(optBlock);
-        if (option !== null) {
-          options.push(option);
-          optionBlockIds.push(optBlock.id);
-        }
-      }
+      const { options, optionBlockIds } = readOptions(block);
       return {
         trigger: {
           type: "slash_command",
@@ -173,10 +262,48 @@ function readTriggerWithMap(
         optionBlockIds,
       };
     }
+    case "slash_subcommand": {
+      const { options, optionBlockIds } = readOptions(block);
+      const group = optionalText(block, "GROUP");
+      return {
+        trigger: {
+          type: "slash_subcommand",
+          command: text(block, "COMMAND"),
+          ...(group !== undefined ? { group } : {}),
+          subcommand: text(block, "SUBCOMMAND"),
+          description: text(block, "DESCRIPTION"),
+          options,
+        },
+        optionBlockIds,
+      };
+    }
+    case "user_command":
+      return {
+        trigger: { type: "user_command", name: text(block, "NAME").trim() },
+        optionBlockIds: [],
+      };
+    case "message_command":
+      return {
+        trigger: { type: "message_command", name: text(block, "NAME").trim() },
+        optionBlockIds: [],
+      };
+    case "modal_submit":
+      return {
+        trigger: { type: "modal_submit", id: text(block, "ID").trim() },
+        optionBlockIds: [],
+      };
     case "member_join":
-      return { trigger: { type: "member_join" }, optionBlockIds: [] };
     case "member_leave":
-      return { trigger: { type: "member_leave" }, optionBlockIds: [] };
+    case "member_update":
+    case "member_ban":
+    case "member_unban":
+    case "message_edit":
+    case "message_delete":
+    case "thread_create":
+    case "invite_create":
+    case "poll_vote_add":
+    case "voice_state_update":
+      return { trigger: { type: block.type }, optionBlockIds: [] };
     case "message_contains":
       return {
         trigger: {
@@ -195,6 +322,16 @@ function readTriggerWithMap(
           type: block.type,
           ...(emoji !== undefined ? { emoji } : {}),
           ...(message_id !== undefined ? { message_id } : {}),
+        },
+        optionBlockIds: [],
+      };
+    }
+    case "automod_execution": {
+      const rule_id = optionalText(block, "RULE_ID");
+      return {
+        trigger: {
+          type: "automod_execution",
+          ...(rule_id !== undefined ? { rule_id } : {}),
         },
         optionBlockIds: [],
       };
@@ -260,6 +397,10 @@ function readExpr(block: Blockly.Block): { expr: Expr; node: ExprNode } {
       return leaf({ type: "option", name: text(block, "NAME") });
     case "value_selected":
       return leaf({ type: "selected" });
+    case "value_modal_field":
+      return leaf({ type: "modal_field", id: text(block, "ID").trim() });
+    case "value_target":
+      return leaf({ type: "target", field: oneOf(block, "FIELD", TARGET_FIELDS) });
     case "value_random": {
       const min = value(block, "MIN");
       const max = value(block, "MAX");
@@ -533,6 +674,30 @@ function readComponents(block: Blockly.Block): {
         });
         break;
       }
+      case "component_entity_select_menu": {
+        flushButtons();
+        const kind = oneOf(item, "KIND", ENTITY_SELECT_KINDS);
+        const placeholder = text(item, "PLACEHOLDER");
+        const channelFilterRaw = text(item, "CHANNEL_FILTER");
+        const channel_types =
+          kind === "channel" &&
+          channelFilterRaw !== "any" &&
+          CHANNEL_FILTERS.includes(channelFilterRaw as ChannelFilter)
+            ? [channelFilterRaw as ChannelFilter]
+            : undefined;
+        rows.push({
+          type: "entity_select_menu",
+          id: text(item, "ID").trim(),
+          kind,
+          ...(placeholder.trim() ? { placeholder } : {}),
+          min_values: Math.trunc(num(item, "MIN")),
+          max_values: Math.trunc(num(item, "MAX")),
+          disabled: checked(item, "DISABLED"),
+          ...(channel_types ? { channel_types } : {}),
+        });
+        nodes.push({ blockId: item.id });
+        break;
+      }
       default:
         throw new GenerateError("This block cannot be used as a message component.", item.id);
     }
@@ -542,21 +707,92 @@ function readComponents(block: Blockly.Block): {
   return { components: rows, nodes };
 }
 
-function readRichBody(block: Blockly.Block): {
-  body: { content: string; embeds?: Embed[]; components?: ComponentRow[] };
+function readPoll(block: Blockly.Block): PollSpec | undefined {
+  const pollBlocks = stack(block, "POLL");
+  if (pollBlocks.length === 0) {
+    return undefined;
+  }
+  if (pollBlocks.length > 1) {
+    throw new GenerateError("A message can only have one poll.", pollBlocks[1].id);
+  }
+  const pollBlock = pollBlocks[0];
+  if (pollBlock.type !== "message_poll") {
+    throw new GenerateError("Only a poll block can go in the poll slot.", pollBlock.id);
+  }
+  const answers: PollAnswerSpec[] = stack(pollBlock, "ANSWERS").map((ans) => {
+    if (ans.type !== "poll_answer") {
+      throw new GenerateError("Only poll answer blocks can go inside a poll.", ans.id);
+    }
+    const emoji = optionalText(ans, "EMOJI");
+    return {
+      text: text(ans, "TEXT"),
+      ...(emoji !== undefined ? { emoji } : {}),
+    };
+  });
+  return {
+    question: text(pollBlock, "QUESTION"),
+    answers,
+    duration_hours: Math.trunc(num(pollBlock, "DURATION")),
+    allow_multiselect: checked(pollBlock, "MULTISELECT"),
+  };
+}
+
+function readAttachments(block: Blockly.Block): AttachmentSpec[] {
+  return stack(block, "ATTACHMENTS").map((att) => {
+    if (att.type !== "message_attachment") {
+      throw new GenerateError("Only file blocks can go in the files slot.", att.id);
+    }
+    return {
+      filename: text(att, "FILENAME"),
+      content: text(att, "CONTENT"),
+    };
+  });
+}
+
+function readRichBody(
+  block: Blockly.Block,
+  allowPollAndFiles: boolean,
+): {
+  body: {
+    content: string;
+    embeds?: Embed[];
+    components?: ComponentRow[];
+    poll?: PollSpec;
+    attachments?: AttachmentSpec[];
+  };
   embeds?: EmbedNode[];
   components?: ComponentRowNode[];
 } {
   const embeds = stack(block, "EMBEDS").map(readEmbed);
   const { components, nodes: componentNodes } = readComponents(block);
+  const poll = allowPollAndFiles ? readPoll(block) : undefined;
+  const attachments = allowPollAndFiles ? readAttachments(block) : [];
   return {
     body: {
       content: text(block, "CONTENT"),
       ...(embeds.length > 0 ? { embeds: embeds.map((entry) => entry.embed) } : {}),
       ...(components.length > 0 ? { components } : {}),
+      ...(poll !== undefined ? { poll } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
     },
     ...(embeds.length > 0 ? { embeds: embeds.map((entry) => entry.node) } : {}),
     ...(componentNodes.length > 0 ? { components: componentNodes } : {}),
+  };
+}
+
+function readModalInput(block: Blockly.Block): ModalInputSpec {
+  if (block.type !== "modal_text_input") {
+    throw new GenerateError("Only modal input blocks can go inside a modal.", block.id);
+  }
+  const placeholder = optionalText(block, "PLACEHOLDER");
+  const valueText = optionalText(block, "VALUE");
+  return {
+    id: text(block, "ID").trim(),
+    label: text(block, "LABEL"),
+    style: oneOf(block, "STYLE", TEXT_INPUT_STYLES),
+    ...(placeholder !== undefined ? { placeholder } : {}),
+    required: checked(block, "REQUIRED"),
+    ...(valueText !== undefined ? { value: valueText } : {}),
   };
 }
 
@@ -572,7 +808,7 @@ function readStatement(block: Blockly.Block): { statement: Statement; node: Stat
         node: { blockId: block.id },
       };
     case "reply_rich": {
-      const rich = readRichBody(block);
+      const rich = readRichBody(block, true);
       return {
         statement: {
           type: "reply",
@@ -592,18 +828,20 @@ function readStatement(block: Blockly.Block): { statement: Statement; node: Stat
         node: { blockId: block.id },
       };
     case "send_rich_message": {
-      const rich = readRichBody(block);
+      const rich = readRichBody(block, true);
+      const replyTo = optionalText(block, "REPLY_TO");
       return {
         statement: {
           type: "send_message",
           channel_id: text(block, "CHANNEL_ID").trim(),
           ...rich.body,
+          ...(replyTo !== undefined ? { reply_to_message_id: replyTo } : {}),
         },
         node: { blockId: block.id, embeds: rich.embeds, components: rich.components },
       };
     }
     case "update_message": {
-      const rich = readRichBody(block);
+      const rich = readRichBody(block, false);
       return {
         statement: {
           type: "update_message",
@@ -612,6 +850,114 @@ function readStatement(block: Blockly.Block): { statement: Statement; node: Stat
         node: { blockId: block.id, embeds: rich.embeds, components: rich.components },
       };
     }
+    case "show_modal":
+      return {
+        statement: {
+          type: "show_modal",
+          id: text(block, "ID").trim(),
+          title: text(block, "TITLE"),
+          inputs: stack(block, "INPUTS").map(readModalInput),
+        },
+        node: { blockId: block.id },
+      };
+    case "create_thread_from_message":
+      return {
+        statement: {
+          type: "create_thread_from_message",
+          name: text(block, "NAME"),
+          auto_archive_minutes: Math.trunc(num(block, "ARCHIVE")),
+        },
+        node: { blockId: block.id },
+      };
+    case "create_thread":
+      return {
+        statement: {
+          type: "create_thread",
+          channel_id: text(block, "CHANNEL_ID").trim(),
+          name: text(block, "NAME"),
+          private: checked(block, "PRIVATE"),
+          auto_archive_minutes: Math.trunc(num(block, "ARCHIVE")),
+        },
+        node: { blockId: block.id },
+      };
+    case "create_forum_post": {
+      const embeds = stack(block, "EMBEDS").map(readEmbed);
+      return {
+        statement: {
+          type: "create_forum_post",
+          channel_id: text(block, "CHANNEL_ID").trim(),
+          title: text(block, "TITLE"),
+          content: text(block, "CONTENT"),
+          ...(embeds.length > 0 ? { embeds: embeds.map((entry) => entry.embed) } : {}),
+        },
+        node: {
+          blockId: block.id,
+          ...(embeds.length > 0 ? { embeds: embeds.map((entry) => entry.node) } : {}),
+        },
+      };
+    }
+    case "join_thread":
+      return {
+        statement: {
+          type: "join_thread",
+          thread_id: text(block, "THREAD_ID").trim(),
+        },
+        node: { blockId: block.id },
+      };
+    case "add_thread_member":
+      return {
+        statement: {
+          type: "add_thread_member",
+          thread_id: text(block, "THREAD_ID").trim(),
+          member_id: text(block, "MEMBER_ID").trim(),
+        },
+        node: { blockId: block.id },
+      };
+    case "remove_thread_member":
+      return {
+        statement: {
+          type: "remove_thread_member",
+          thread_id: text(block, "THREAD_ID").trim(),
+          member_id: text(block, "MEMBER_ID").trim(),
+        },
+        node: { blockId: block.id },
+      };
+    case "pin_message":
+      return {
+        statement: {
+          type: "pin_message",
+          channel_id: text(block, "CHANNEL_ID").trim(),
+          message_id: text(block, "MESSAGE_ID").trim(),
+        },
+        node: { blockId: block.id },
+      };
+    case "unpin_message":
+      return {
+        statement: {
+          type: "unpin_message",
+          channel_id: text(block, "CHANNEL_ID").trim(),
+          message_id: text(block, "MESSAGE_ID").trim(),
+        },
+        node: { blockId: block.id },
+      };
+    case "publish_message":
+      return {
+        statement: {
+          type: "publish_message",
+          channel_id: text(block, "CHANNEL_ID").trim(),
+          message_id: text(block, "MESSAGE_ID").trim(),
+        },
+        node: { blockId: block.id },
+      };
+    case "bulk_delete_messages":
+      return {
+        statement: {
+          type: "bulk_delete_messages",
+          channel_id: text(block, "CHANNEL_ID").trim(),
+          count: Math.trunc(num(block, "COUNT")),
+        },
+        node: { blockId: block.id },
+      };
     case "react":
       return {
         statement: { type: "react", emoji: text(block, "EMOJI").trim() },
@@ -859,7 +1205,12 @@ export function findMissingIntents(
     if (!block.isEnabled()) {
       continue;
     }
-    if ((block.type === "member_join" || block.type === "member_leave") && !intents.members) {
+    if (
+      (block.type === "member_join" ||
+        block.type === "member_leave" ||
+        block.type === "member_update") &&
+      !intents.members
+    ) {
       missing.push({
         intent: "members",
         label: "Server Members Intent",
@@ -867,7 +1218,10 @@ export function findMissingIntents(
         message:
           "Server Members Intent is disabled in the Discord developer portal. Enable it under Bot before saving.",
       });
-    } else if (block.type === "message_contains" && !intents.message_content) {
+    } else if (
+      (block.type === "message_contains" || block.type === "message_edit") &&
+      !intents.message_content
+    ) {
       missing.push({
         intent: "message_content",
         label: "Message Content Intent",

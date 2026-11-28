@@ -27,10 +27,11 @@ use twilight_gateway::{
 };
 use twilight_http::Client;
 use twilight_http::error::ErrorType;
+use twilight_model::channel::ChannelType;
 use twilight_model::channel::message::{AllowedMentions, MentionType};
 use twilight_model::gateway::event::Event;
 use twilight_model::id::Id;
-use twilight_model::id::marker::{ApplicationMarker, UserMarker};
+use twilight_model::id::marker::{ApplicationMarker, GuildMarker, UserMarker};
 use twilight_model::oauth::ApplicationFlags;
 use uuid::Uuid;
 
@@ -42,9 +43,21 @@ const EVENTS: EventTypeFlags = EventTypeFlags::READY
     .union(EventTypeFlags::INTERACTION_CREATE)
     .union(EventTypeFlags::MEMBER_ADD)
     .union(EventTypeFlags::MEMBER_REMOVE)
+    .union(EventTypeFlags::MEMBER_UPDATE)
+    .union(EventTypeFlags::BAN_ADD)
+    .union(EventTypeFlags::BAN_REMOVE)
     .union(EventTypeFlags::MESSAGE_CREATE)
+    .union(EventTypeFlags::MESSAGE_UPDATE)
+    .union(EventTypeFlags::MESSAGE_DELETE)
     .union(EventTypeFlags::REACTION_ADD)
-    .union(EventTypeFlags::REACTION_REMOVE);
+    .union(EventTypeFlags::REACTION_REMOVE)
+    .union(EventTypeFlags::THREAD_CREATE)
+    .union(EventTypeFlags::INVITE_CREATE)
+    .union(EventTypeFlags::AUTO_MODERATION_ACTION_EXECUTION)
+    .union(EventTypeFlags::MESSAGE_POLL_VOTE_ADD)
+    .union(EventTypeFlags::VOICE_STATE_UPDATE);
+
+const MAX_RESOURCE_GUILDS: usize = 10;
 
 #[derive(Debug, Error)]
 pub enum RuntimeError {
@@ -94,6 +107,44 @@ pub struct Runtime {
 pub struct BotIntents {
     pub members: bool,
     pub message_content: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BotResources {
+    pub guilds: Vec<BotGuildResources>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BotGuildResources {
+    pub id: String,
+    pub name: String,
+    pub icon: Option<String>,
+    pub channels: Vec<BotChannelResource>,
+    pub roles: Vec<BotRoleResource>,
+    pub members: Vec<BotMemberResource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BotChannelResource {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub parent_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BotRoleResource {
+    pub id: String,
+    pub name: String,
+    pub color: u32,
+    pub managed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BotMemberResource {
+    pub id: String,
+    pub name: String,
+    pub username: String,
 }
 
 #[must_use]
@@ -337,6 +388,54 @@ impl Runtime {
         Ok(intents_from_flags(application.flags))
     }
 
+    /// Fetch the Discord servers, channels, roles, and (if allowed) members
+    /// accessible by the bot, so the editor can offer native pickers instead of raw IDs.
+    pub async fn fetch_resources(&self, id: Uuid) -> Result<BotResources, RuntimeError> {
+        let token = self.load_token(id).await?;
+        let http = bot_client(&token);
+
+        let (guilds_resp, app_resp) = tokio::join!(
+            http.current_user_guilds().limit(MAX_RESOURCE_GUILDS as u16),
+            http.current_user_application()
+        );
+        let guilds_list = guilds_resp
+            .map_err(|error| {
+                RuntimeError::Discord(if is_unauthorized(&error) {
+                    "Discord rejected the bot token: it was probably reset".to_owned()
+                } else {
+                    format!("Discord did not return the bot's servers: {error}")
+                })
+            })?
+            .model()
+            .await
+            .map_err(|error| RuntimeError::Discord(error.to_string()))?;
+
+        let include_members = match app_resp {
+            Ok(resp) => resp
+                .model()
+                .await
+                .map(|app| intents_from_flags(app.flags).members)
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+
+        let mut guilds = Vec::with_capacity(guilds_list.len());
+        for guild in guilds_list.into_iter().take(MAX_RESOURCE_GUILDS) {
+            guilds.push(
+                fetch_guild_resources(
+                    &http,
+                    guild.id,
+                    guild.name,
+                    guild.icon.map(|h| h.to_string()),
+                    include_members,
+                )
+                .await,
+            );
+        }
+
+        Ok(BotResources { guilds })
+    }
+
     /// Re-evaluate the current plan after a Stripe webhook changes access.
     pub async fn refresh_program(&self, id: Uuid) -> Result<(), RuntimeError> {
         let enabled = sqlx::query_scalar!("SELECT enabled FROM bots WHERE id = $1", id)
@@ -358,6 +457,114 @@ impl Runtime {
         if let Err(error) = result {
             tracing::error!(bot = %id, %error, "failed to save bot status");
         }
+    }
+}
+
+async fn fetch_guild_resources(
+    http: &Client,
+    guild_id: Id<GuildMarker>,
+    name: String,
+    icon: Option<String>,
+    include_members: bool,
+) -> BotGuildResources {
+    let channels_fut = http.guild_channels(guild_id);
+    let roles_fut = http.roles(guild_id);
+
+    let (channels_res, roles_res) = tokio::join!(channels_fut, roles_fut);
+
+    let mut channels = match channels_res {
+        Ok(resp) => resp
+            .model()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|ch| ch.kind != ChannelType::GuildCategory)
+            .filter_map(|ch| {
+                let name = ch.name?;
+                let kind = channel_kind_label(ch.kind);
+                Some((
+                    ch.position.unwrap_or(0),
+                    BotChannelResource {
+                        id: ch.id.get().to_string(),
+                        name,
+                        kind: kind.to_owned(),
+                        parent_id: ch.parent_id.map(|id| id.get().to_string()),
+                    },
+                ))
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    channels.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name)));
+
+    let mut roles = match roles_res {
+        Ok(resp) => resp
+            .model()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|role| role.id.get() != guild_id.get())
+            .map(|role| {
+                (
+                    role.position,
+                    BotRoleResource {
+                        id: role.id.get().to_string(),
+                        name: role.name,
+                        color: role.colors.primary_color,
+                        managed: role.managed,
+                    },
+                )
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    roles.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+
+    let members = if include_members {
+        match http.guild_members(guild_id).limit(100).await {
+            Ok(resp) => resp
+                .model()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|member| !member.user.bot)
+                .map(|member| {
+                    let display = member
+                        .nick
+                        .or(member.user.global_name)
+                        .unwrap_or_else(|| member.user.name.clone());
+                    BotMemberResource {
+                        id: member.user.id.get().to_string(),
+                        name: display,
+                        username: member.user.name,
+                    }
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+
+    BotGuildResources {
+        id: guild_id.get().to_string(),
+        name,
+        icon,
+        channels: channels.into_iter().map(|(_, ch)| ch).collect(),
+        roles: roles.into_iter().map(|(_, role)| role).collect(),
+        members,
+    }
+}
+
+const fn channel_kind_label(kind: ChannelType) -> &'static str {
+    match kind {
+        ChannelType::GuildText => "text",
+        ChannelType::GuildVoice => "voice",
+        ChannelType::GuildAnnouncement => "announcement",
+        ChannelType::GuildStageVoice => "stage",
+        ChannelType::GuildForum => "forum",
+        ChannelType::GuildMedia => "media",
+        _ => "other",
     }
 }
 
@@ -388,7 +595,7 @@ async fn register_commands(
     application_id: Id<ApplicationMarker>,
     program: &CompiledProgram,
 ) -> Result<(), RuntimeError> {
-    let commands = commands::build(program.commands());
+    let commands = commands::build(program.commands(), program.context_commands());
     http.interaction(application_id)
         .set_global_commands(&commands)
         .await
@@ -416,9 +623,26 @@ fn intents(needs: GatewayNeeds) -> Intents {
     }
     if needs.messages {
         intents |= Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
+    } else if needs.message_events {
+        intents |= Intents::GUILD_MESSAGES;
     }
     if needs.reactions {
         intents |= Intents::GUILD_MESSAGE_REACTIONS;
+    }
+    if needs.moderation {
+        intents |= Intents::GUILD_MODERATION;
+    }
+    if needs.invites {
+        intents |= Intents::GUILD_INVITES;
+    }
+    if needs.voice_states {
+        intents |= Intents::GUILD_VOICE_STATES;
+    }
+    if needs.automod {
+        intents |= Intents::AUTO_MODERATION_EXECUTION;
+    }
+    if needs.polls {
+        intents |= Intents::GUILD_MESSAGE_POLLS;
     }
     intents
 }
@@ -652,7 +876,7 @@ fn close_reason(code: Option<u16>) -> String {
     match code {
         Some(4004) => "Discord rejected the bot token: it was probably reset. Add the bot again with its new token.".to_owned(),
         Some(4014) => "A privileged intent is disabled. In the Discord developer portal, open Bot and enable \
-                       \"Server Members Intent\" (member join/leave) and \"Message Content Intent\" (message triggers)."
+                       \"Server Members Intent\" (member join/leave/update) and \"Message Content Intent\" (message triggers)."
             .to_owned(),
         Some(code) => format!("Discord closed the connection (code {code})."),
         None => "Discord closed the connection.".to_owned(),
@@ -671,12 +895,24 @@ mod tests {
                 members: true,
                 messages: true,
                 reactions: true,
+                moderation: true,
+                automod: true,
+                ..GatewayNeeds::default()
             }),
             Intents::GUILDS
                 | Intents::GUILD_MEMBERS
                 | Intents::GUILD_MESSAGES
                 | Intents::MESSAGE_CONTENT
                 | Intents::GUILD_MESSAGE_REACTIONS
+                | Intents::GUILD_MODERATION
+                | Intents::AUTO_MODERATION_EXECUTION
+        );
+        assert_eq!(
+            intents(GatewayNeeds {
+                message_events: true,
+                ..GatewayNeeds::default()
+            }),
+            Intents::GUILDS | Intents::GUILD_MESSAGES
         );
     }
 }

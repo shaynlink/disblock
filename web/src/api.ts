@@ -3,6 +3,7 @@ import type {
   Bot,
   BotDetail,
   BotIntents,
+  BotResources,
   ErrorLocation,
   ExecutionEntry,
   Program,
@@ -104,6 +105,7 @@ export const api = {
   setEnabled: (id: string, enabled: boolean) => request<void>("PATCH", `/bots/${id}`, { enabled }),
   deleteBot: (id: string) => request<void>("DELETE", `/bots/${id}`),
   botIntents: (id: string) => request<BotIntents>("GET", `/bots/${id}/intents`),
+  botResources: (id: string) => request<BotResources>("GET", `/bots/${id}/resources`),
   saveProgram: (id: string, workspace: object, program: Program) =>
     request<void>("PUT", `/bots/${id}/program`, { workspace, program }),
   executions: (id: string) => request<ExecutionEntry[]>("GET", `/bots/${id}/executions`),

@@ -4,13 +4,19 @@ use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 use crate::compile::{
-    Calc, CompiledButton, CompiledComponentRow, CompiledEmbed, CompiledHandler, CompiledMessage,
-    CompiledProgram, MAX_BUTTON_LABEL_LEN, MAX_EMBED_AUTHOR_NAME_LEN, MAX_EMBED_DESCRIPTION_LEN,
+    Calc, CompiledAttachment, CompiledButton, CompiledComponentRow, CompiledEmbed, CompiledHandler,
+    CompiledMessage, CompiledModalInput, CompiledPoll, CompiledProgram, MAX_ATTACHMENT_CONTENT_LEN,
+    MAX_BUTTON_LABEL_LEN, MAX_EMBED_AUTHOR_NAME_LEN, MAX_EMBED_DESCRIPTION_LEN,
     MAX_EMBED_FIELD_NAME_LEN, MAX_EMBED_FIELD_VALUE_LEN, MAX_EMBED_FOOTER_TEXT_LEN,
-    MAX_EMBED_TITLE_LEN, MAX_EMBED_TOTAL_LEN, MAX_SELECT_OPTION_DESCRIPTION_LEN,
-    MAX_SELECT_OPTION_LABEL_LEN, MAX_SELECT_PLACEHOLDER_LEN, MAX_WAIT_SECONDS, Step,
+    MAX_EMBED_TITLE_LEN, MAX_EMBED_TOTAL_LEN, MAX_MODAL_LABEL_LEN, MAX_MODAL_PLACEHOLDER_LEN,
+    MAX_MODAL_TITLE_LEN, MAX_MODAL_VALUE_LEN, MAX_POLL_ANSWER_LEN, MAX_POLL_QUESTION_LEN,
+    MAX_SELECT_OPTION_DESCRIPTION_LEN, MAX_SELECT_OPTION_LABEL_LEN, MAX_SELECT_PLACEHOLDER_LEN,
+    MAX_THREAD_NAME_LEN, MAX_WAIT_SECONDS, Step,
 };
-use crate::model::{ButtonStyle, CompareOp, MathOp, ScheduleUnit, Scope};
+use crate::model::{
+    ButtonStyle, ChannelFilter, CompareOp, EntitySelectKind, MathOp, ScheduleUnit, Scope,
+    TargetField, TextInputStyle,
+};
 use crate::template::{Context, MAX_MESSAGE_LEN, render_max};
 use crate::value::Value;
 
@@ -43,11 +49,30 @@ pub enum EventKind<'a> {
     SlashCommand {
         name: &'a str,
     },
+    SlashSubcommand {
+        command: &'a str,
+        group: Option<&'a str>,
+        subcommand: &'a str,
+    },
+    UserCommand {
+        name: &'a str,
+    },
+    MessageCommand {
+        name: &'a str,
+    },
+    ModalSubmit {
+        id: &'a str,
+    },
     MemberJoin,
     MemberLeave,
+    MemberUpdate,
+    MemberBan,
+    MemberUnban,
     Message {
         content: &'a str,
     },
+    MessageEdit,
+    MessageDelete,
     ReactionAdd {
         emoji: EventEmoji<'a>,
         message_id: u64,
@@ -56,6 +81,13 @@ pub enum EventKind<'a> {
         emoji: EventEmoji<'a>,
         message_id: u64,
     },
+    ThreadCreate,
+    InviteCreate,
+    AutoModExecution {
+        rule_id: u64,
+    },
+    PollVoteAdd,
+    VoiceStateUpdate,
     ButtonClick {
         id: &'a str,
     },
@@ -93,6 +125,8 @@ pub struct MessagePayload {
     pub content: Option<String>,
     pub embeds: Vec<RenderedEmbed>,
     pub components: Vec<RenderedComponentRow>,
+    pub poll: Option<RenderedPoll>,
+    pub attachments: Vec<RenderedAttachment>,
 }
 
 impl MessagePayload {
@@ -102,8 +136,42 @@ impl MessagePayload {
             content: Some(content.into()),
             embeds: Vec::new(),
             components: Vec::new(),
+            poll: None,
+            attachments: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedPoll {
+    pub question: String,
+    pub answers: Vec<RenderedPollAnswer>,
+    pub duration_hours: u32,
+    pub allow_multiselect: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedPollAnswer {
+    pub text: String,
+    pub emoji: Option<EmojiRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedAttachment {
+    pub filename: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenderedModalInput {
+    pub id: String,
+    pub label: String,
+    pub style: TextInputStyle,
+    pub placeholder: Option<String>,
+    pub required: bool,
+    pub min_length: Option<u16>,
+    pub max_length: Option<u16>,
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -151,6 +219,15 @@ pub enum RenderedComponentRow {
         disabled: bool,
         options: Vec<RenderedSelectOption>,
     },
+    EntitySelectMenu {
+        id: String,
+        kind: EntitySelectKind,
+        placeholder: Option<String>,
+        min_values: u8,
+        max_values: u8,
+        disabled: bool,
+        channel_types: Vec<ChannelFilter>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -189,9 +266,58 @@ pub enum Effect {
     SendMessage {
         channel_id: u64,
         message: MessagePayload,
+        reply_to_message_id: Option<u64>,
     },
     UpdateMessage {
         message: MessagePayload,
+    },
+    ShowModal {
+        id: String,
+        title: String,
+        inputs: Vec<RenderedModalInput>,
+    },
+    CreateThreadFromMessage {
+        name: String,
+        auto_archive_minutes: Option<u16>,
+    },
+    CreateThread {
+        channel_id: u64,
+        name: String,
+        private: bool,
+        auto_archive_minutes: Option<u16>,
+    },
+    CreateForumPost {
+        channel_id: u64,
+        title: String,
+        content: Option<String>,
+        embeds: Vec<RenderedEmbed>,
+    },
+    JoinThread {
+        thread_id: u64,
+    },
+    AddThreadMember {
+        thread_id: u64,
+        member_id: u64,
+    },
+    RemoveThreadMember {
+        thread_id: u64,
+        member_id: u64,
+    },
+    PinMessage {
+        channel_id: u64,
+        message_id: u64,
+    },
+    UnpinMessage {
+        channel_id: u64,
+        message_id: u64,
+    },
+    PublishMessage {
+        channel_id: u64,
+        message_id: u64,
+    },
+    BulkDeleteMessages {
+        channel_id: u64,
+        count: u8,
     },
     AddRole {
         role_id: u64,
@@ -257,6 +383,8 @@ pub enum RunError {
     EmptyField(&'static str),
     #[error("the member ID is invalid after replacing placeholders")]
     InvalidMemberId,
+    #[error("the Discord ID is invalid after replacing placeholders")]
+    InvalidTargetId,
 }
 
 /// One handler matched by an event: what to do, in order.
@@ -282,8 +410,35 @@ impl CompiledProgram {
     ) -> Vec<Execution> {
         let matched: Vec<usize> = match event.kind {
             EventKind::SlashCommand { name } => self.slash.get(name).copied().into_iter().collect(),
+            EventKind::SlashSubcommand {
+                command,
+                group,
+                subcommand,
+            } => self
+                .subcommands
+                .get(&(
+                    command.to_owned(),
+                    group.map(str::to_owned),
+                    subcommand.to_owned(),
+                ))
+                .copied()
+                .into_iter()
+                .collect(),
+            EventKind::UserCommand { name } => {
+                self.user_commands.get(name).copied().into_iter().collect()
+            }
+            EventKind::MessageCommand { name } => self
+                .message_commands
+                .get(name)
+                .copied()
+                .into_iter()
+                .collect(),
+            EventKind::ModalSubmit { id } => self.modals.get(id).copied().into_iter().collect(),
             EventKind::MemberJoin => self.member_join.clone(),
             EventKind::MemberLeave => self.member_leave.clone(),
+            EventKind::MemberUpdate => self.member_update.clone(),
+            EventKind::MemberBan => self.member_ban.clone(),
+            EventKind::MemberUnban => self.member_unban.clone(),
             EventKind::Message { content } => {
                 let lowered = content.to_lowercase();
                 self.messages
@@ -299,12 +454,24 @@ impl CompiledProgram {
                     .map(|matcher| matcher.handler)
                     .collect()
             }
+            EventKind::MessageEdit => self.message_edit.clone(),
+            EventKind::MessageDelete => self.message_delete.clone(),
             EventKind::ReactionAdd { emoji, message_id } => {
                 matching_reactions(&self.reaction_add, emoji, message_id)
             }
             EventKind::ReactionRemove { emoji, message_id } => {
                 matching_reactions(&self.reaction_remove, emoji, message_id)
             }
+            EventKind::ThreadCreate => self.thread_create.clone(),
+            EventKind::InviteCreate => self.invite_create.clone(),
+            EventKind::AutoModExecution { rule_id } => self
+                .automod_execution
+                .iter()
+                .filter(|matcher| matcher.rule_id.is_none_or(|want| want == rule_id))
+                .map(|matcher| matcher.handler)
+                .collect(),
+            EventKind::PollVoteAdd => self.poll_vote_add.clone(),
+            EventKind::VoiceStateUpdate => self.voice_state_update.clone(),
             EventKind::ButtonClick { id } => self.buttons.get(id).copied().into_iter().collect(),
             EventKind::SelectMenu { id } => self.selects.get(id).copied().into_iter().collect(),
             EventKind::Schedule { interval, unit } => self
@@ -417,26 +584,155 @@ impl<R: Random> Runner<'_, R> {
             Step::SendMessage {
                 channel_id,
                 message,
+                reply_to_message_id,
             } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                let reply_to_message_id = reply_to_message_id
+                    .as_deref()
+                    .map(|raw| self.snowflake_id(raw))
+                    .transpose()?;
                 let message = self.message(message, true)?;
                 self.emit(Effect::SendMessage {
-                    channel_id: *channel_id,
+                    channel_id,
                     message,
+                    reply_to_message_id,
                 })?;
             }
             Step::UpdateMessage { message } => {
                 let message = self.message(message, false)?;
                 self.emit(Effect::UpdateMessage { message })?;
             }
+            Step::ShowModal { id, title, inputs } => {
+                let title = self.render_required(title, MAX_MODAL_TITLE_LEN, "modal title")?;
+                let inputs = self.modal_inputs(inputs)?;
+                self.emit(Effect::ShowModal {
+                    id: id.clone(),
+                    title,
+                    inputs,
+                })?;
+            }
+            Step::CreateThreadFromMessage {
+                name,
+                auto_archive_minutes,
+            } => {
+                let name = self.render_required(name, MAX_THREAD_NAME_LEN, "thread name")?;
+                self.emit(Effect::CreateThreadFromMessage {
+                    name,
+                    auto_archive_minutes: *auto_archive_minutes,
+                })?;
+            }
+            Step::CreateThread {
+                channel_id,
+                name,
+                private,
+                auto_archive_minutes,
+            } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                let name = self.render_required(name, MAX_THREAD_NAME_LEN, "thread name")?;
+                self.emit(Effect::CreateThread {
+                    channel_id,
+                    name,
+                    private: *private,
+                    auto_archive_minutes: *auto_archive_minutes,
+                })?;
+            }
+            Step::CreateForumPost {
+                channel_id,
+                title,
+                content,
+                embeds,
+            } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                let title = self.render_required(title, MAX_THREAD_NAME_LEN, "forum post title")?;
+                let content = self.render_optional(content.as_deref(), MAX_MESSAGE_LEN);
+                let (embeds, _) = self.embeds(embeds)?;
+                if content.is_none() && embeds.is_empty() {
+                    return Err(RunError::EmptyMessage);
+                }
+                self.emit(Effect::CreateForumPost {
+                    channel_id,
+                    title,
+                    content,
+                    embeds,
+                })?;
+            }
+            Step::JoinThread { thread_id } => {
+                let thread_id = self.snowflake_id(thread_id)?;
+                self.emit(Effect::JoinThread { thread_id })?;
+            }
+            Step::AddThreadMember {
+                thread_id,
+                member_id,
+            } => {
+                let thread_id = self.snowflake_id(thread_id)?;
+                let member_id = self.member_id(member_id)?;
+                self.emit(Effect::AddThreadMember {
+                    thread_id,
+                    member_id,
+                })?;
+            }
+            Step::RemoveThreadMember {
+                thread_id,
+                member_id,
+            } => {
+                let thread_id = self.snowflake_id(thread_id)?;
+                let member_id = self.member_id(member_id)?;
+                self.emit(Effect::RemoveThreadMember {
+                    thread_id,
+                    member_id,
+                })?;
+            }
+            Step::PinMessage {
+                channel_id,
+                message_id,
+            } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                let message_id = self.snowflake_id(message_id)?;
+                self.emit(Effect::PinMessage {
+                    channel_id,
+                    message_id,
+                })?;
+            }
+            Step::UnpinMessage {
+                channel_id,
+                message_id,
+            } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                let message_id = self.snowflake_id(message_id)?;
+                self.emit(Effect::UnpinMessage {
+                    channel_id,
+                    message_id,
+                })?;
+            }
+            Step::PublishMessage {
+                channel_id,
+                message_id,
+            } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                let message_id = self.snowflake_id(message_id)?;
+                self.emit(Effect::PublishMessage {
+                    channel_id,
+                    message_id,
+                })?;
+            }
+            Step::BulkDeleteMessages { channel_id, count } => {
+                let channel_id = self.snowflake_id(channel_id)?;
+                self.emit(Effect::BulkDeleteMessages {
+                    channel_id,
+                    count: *count,
+                })?;
+            }
             Step::AddRole(role_id) => {
-                self.emit(Effect::AddRole { role_id: *role_id })?;
-                if !self.roles.contains(role_id) {
-                    self.roles.push(*role_id);
+                let role_id = self.snowflake_id(role_id)?;
+                self.emit(Effect::AddRole { role_id })?;
+                if !self.roles.contains(&role_id) {
+                    self.roles.push(role_id);
                 }
             }
             Step::RemoveRole(role_id) => {
-                self.emit(Effect::RemoveRole { role_id: *role_id })?;
-                self.roles.retain(|role| role != role_id);
+                let role_id = self.snowflake_id(role_id)?;
+                self.emit(Effect::RemoveRole { role_id })?;
+                self.roles.retain(|role| *role != role_id);
             }
             Step::Timeout {
                 member_id,
@@ -507,6 +803,20 @@ impl<R: Random> Runner<'_, R> {
                 Value::Text(self.context.option(name).unwrap_or_default().to_owned())
             }
             Calc::Selected => Value::Text(self.context.selected.unwrap_or_default().to_owned()),
+            Calc::ModalField(id) => {
+                Value::Text(self.context.modal_field(id).unwrap_or_default().to_owned())
+            }
+            Calc::Target(field) => {
+                let key = match field {
+                    TargetField::Id => "target.id",
+                    TargetField::Mention => "target.mention",
+                    TargetField::Name => "target.name",
+                    TargetField::Content => "target.content",
+                    TargetField::AuthorId => "target.author.id",
+                    TargetField::AuthorMention => "target.author",
+                };
+                Value::Text(self.context.builtin(key).unwrap_or_default())
+            }
             Calc::Random(min, max) => {
                 let (a, b) = (number(&self.eval(min)?)?, number(&self.eval(max)?)?);
                 Value::Number(self.random.between(a.min(b), a.max(b)))
@@ -606,7 +916,26 @@ impl<R: Random> Runner<'_, R> {
 
     fn member_id(&self, template: &str) -> Result<u64, RunError> {
         let rendered = self.render_max(template, 100);
-        parse_member_id(&rendered).ok_or(RunError::InvalidMemberId)
+        parse_snowflake_or_mention(&rendered).ok_or(RunError::InvalidMemberId)
+    }
+
+    fn snowflake_id(&self, template: &str) -> Result<u64, RunError> {
+        let rendered = self.render_max(template, 100);
+        parse_snowflake_or_mention(&rendered).ok_or(RunError::InvalidTargetId)
+    }
+
+    fn embeds(&self, compiled: &[CompiledEmbed]) -> Result<(Vec<RenderedEmbed>, usize), RunError> {
+        let mut embeds = Vec::with_capacity(compiled.len());
+        let mut total_chars = 0usize;
+        for embed in compiled {
+            let (rendered, chars) = self.embed(embed)?;
+            total_chars += chars;
+            if total_chars > MAX_EMBED_TOTAL_LEN {
+                return Err(RunError::EmbedTooLarge);
+            }
+            embeds.push(rendered);
+        }
+        Ok((embeds, total_chars))
     }
 
     fn message(
@@ -615,23 +944,26 @@ impl<R: Random> Runner<'_, R> {
         require_body: bool,
     ) -> Result<MessagePayload, RunError> {
         let content = self.render_optional(compiled.content.as_deref(), MAX_MESSAGE_LEN);
-        let mut embeds = Vec::with_capacity(compiled.embeds.len());
-        let mut total_chars = 0usize;
-        for embed in &compiled.embeds {
-            let (rendered, chars) = self.embed(embed)?;
-            total_chars += chars;
-            if total_chars > MAX_EMBED_TOTAL_LEN {
-                return Err(RunError::EmbedTooLarge);
-            }
-            embeds.push(rendered);
-        }
+        let (embeds, _) = self.embeds(&compiled.embeds)?;
 
         let mut components = Vec::with_capacity(compiled.components.len());
         for row in &compiled.components {
             components.push(self.component_row(row)?);
         }
 
-        if require_body && content.is_none() && embeds.is_empty() {
+        let poll = compiled
+            .poll
+            .as_ref()
+            .map(|poll| self.poll(poll))
+            .transpose()?;
+        let attachments = self.attachments(&compiled.attachments)?;
+
+        if require_body
+            && content.is_none()
+            && embeds.is_empty()
+            && poll.is_none()
+            && attachments.is_empty()
+        {
             return Err(RunError::EmptyMessage);
         }
         if !require_body && content.is_none() && embeds.is_empty() && components.is_empty() {
@@ -642,7 +974,70 @@ impl<R: Random> Runner<'_, R> {
             content,
             embeds,
             components,
+            poll,
+            attachments,
         })
+    }
+
+    fn poll(&self, compiled: &CompiledPoll) -> Result<RenderedPoll, RunError> {
+        let question =
+            self.render_required(&compiled.question, MAX_POLL_QUESTION_LEN, "poll question")?;
+        let mut answers = Vec::with_capacity(compiled.answers.len());
+        for answer in &compiled.answers {
+            answers.push(RenderedPollAnswer {
+                text: self.render_required(&answer.text, MAX_POLL_ANSWER_LEN, "poll answer")?,
+                emoji: answer.emoji.clone(),
+            });
+        }
+        Ok(RenderedPoll {
+            question,
+            answers,
+            duration_hours: compiled.duration_hours,
+            allow_multiselect: compiled.allow_multiselect,
+        })
+    }
+
+    fn attachments(
+        &self,
+        compiled: &[CompiledAttachment],
+    ) -> Result<Vec<RenderedAttachment>, RunError> {
+        let mut rendered = Vec::with_capacity(compiled.len());
+        for item in compiled {
+            rendered.push(RenderedAttachment {
+                filename: item.filename.clone(),
+                content: self.render_required(
+                    &item.content,
+                    MAX_ATTACHMENT_CONTENT_LEN,
+                    "attachment content",
+                )?,
+            });
+        }
+        Ok(rendered)
+    }
+
+    fn modal_inputs(
+        &self,
+        compiled: &[CompiledModalInput],
+    ) -> Result<Vec<RenderedModalInput>, RunError> {
+        let mut inputs = Vec::with_capacity(compiled.len());
+        for input in compiled {
+            inputs.push(RenderedModalInput {
+                id: input.id.clone(),
+                label: self.render_required(
+                    &input.label,
+                    MAX_MODAL_LABEL_LEN,
+                    "modal input label",
+                )?,
+                style: input.style,
+                placeholder: self
+                    .render_optional(input.placeholder.as_deref(), MAX_MODAL_PLACEHOLDER_LEN),
+                required: input.required,
+                min_length: input.min_length,
+                max_length: input.max_length,
+                value: self.render_optional(input.value.as_deref(), MAX_MODAL_VALUE_LEN),
+            });
+        }
+        Ok(inputs)
     }
 
     fn embed(&self, compiled: &CompiledEmbed) -> Result<(RenderedEmbed, usize), RunError> {
@@ -820,6 +1215,24 @@ impl<R: Random> Runner<'_, R> {
                     options: rendered_options,
                 })
             }
+            CompiledComponentRow::EntitySelectMenu {
+                id,
+                kind,
+                placeholder,
+                min_values,
+                max_values,
+                disabled,
+                channel_types,
+            } => Ok(RenderedComponentRow::EntitySelectMenu {
+                id: id.clone(),
+                kind: *kind,
+                placeholder: self
+                    .render_optional(placeholder.as_deref(), MAX_SELECT_PLACEHOLDER_LEN),
+                min_values: *min_values,
+                max_values: *max_values,
+                disabled: *disabled,
+                channel_types: channel_types.clone(),
+            }),
         }
     }
 }
@@ -877,18 +1290,22 @@ fn compare(op: CompareOp, left: &Value, right: &Value) -> Result<bool, RunError>
     })
 }
 
-/// Parse an ID produced by a member target template. User command options are
-/// rendered as `<@id>` so they can be used both in messages and moderation.
-fn parse_member_id(value: &str) -> Option<u64> {
-    let value = value.trim();
-    let value = value
-        .strip_prefix("<@")
-        .and_then(|value| value.strip_suffix('>'))
-        .unwrap_or(value)
-        .strip_prefix('!')
-        .unwrap_or(value);
-    ((17..=20).contains(&value.len()) && value.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| value.parse::<u64>().ok())
+/// Parse a Discord snowflake ID or mention (`<@id>`, `<@!id>`, `<@&id>`, `<#id>`).
+/// If multiple comma-separated IDs are passed from a multi-select menu, uses the first.
+fn parse_snowflake_or_mention(value: &str) -> Option<u64> {
+    let first = value.split(',').next().unwrap_or(value).trim();
+    let inner = first
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+        .unwrap_or(first);
+    let digits = inner
+        .strip_prefix("@!")
+        .or_else(|| inner.strip_prefix("@&"))
+        .or_else(|| inner.strip_prefix('@'))
+        .or_else(|| inner.strip_prefix('#'))
+        .unwrap_or(inner);
+    ((17..=20).contains(&digits.len()) && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| digits.parse::<u64>().ok())
         .flatten()
         .filter(|id| *id != 0)
 }
@@ -896,7 +1313,7 @@ fn parse_member_id(value: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Program;
+    use crate::model::{ModalInputSpec, Program};
 
     /// Always picks the highest number.
     struct Highest;
@@ -923,8 +1340,7 @@ mod tests {
             channel_id: Some(9),
             message_id: Some(99),
             options,
-            selected: None,
-            emoji: None,
+            ..Context::default()
         }
     }
 
@@ -1316,20 +1732,11 @@ mod tests {
             vec![Effect::SendMessage {
                 channel_id: 123_456_789_012_345_678,
                 message: MessagePayload::text("Goodbye ada"),
+                reply_to_message_id: None,
             }]
         );
 
-        let schedule_ctx = Context {
-            user_id: None,
-            user_name: None,
-            roles: &[],
-            guild_id: None,
-            channel_id: None,
-            message_id: None,
-            options: &[],
-            selected: None,
-            emoji: None,
-        };
+        let schedule_ctx = Context::default();
         let schedule = compiled
             .handle(
                 &Event {
@@ -1350,6 +1757,7 @@ mod tests {
             vec![Effect::SendMessage {
                 channel_id: 123_456_789_012_345_678,
                 message: MessagePayload::text("Tick 3"),
+                reply_to_message_id: None,
             }]
         );
     }
@@ -1429,5 +1837,110 @@ mod tests {
                 role_id: 111_111_111_111_111_111,
             }]
         );
+    }
+
+    #[test]
+    fn runs_modals_subcommands_context_commands_and_dynamic_ids() {
+        let compiled = program(
+            r#"{"handlers":[
+                {"trigger":{"type":"slash_subcommand","command":"ticket","subcommand":"open","description":"Open a ticket"},
+                 "actions":[{"type":"show_modal","id":"ticket_form","title":"New ticket for {user.name}",
+                             "inputs":[{"id":"topic","label":"Topic","style":"short","required":true}]}]},
+                {"trigger":{"type":"modal_submit","id":"ticket_form"},
+                 "actions":[
+                    {"type":"set_variable","scope":"local","name":"t","value":{"type":"modal_field","id":"topic"}},
+                    {"type":"reply","content":"Ticket created: {var:t}","ephemeral":true}
+                 ]},
+                {"trigger":{"type":"select_menu","id":"role_picker"},
+                 "actions":[{"type":"add_role","role_id":"{selected}"}]}
+            ]}"#,
+        );
+        let saved = SavedVariables::default();
+
+        let sub_exec = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::SlashSubcommand {
+                        command: "ticket",
+                        group: None,
+                        subcommand: "open",
+                    },
+                    context: context(&[], &[]),
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("subcommand matched");
+        assert_eq!(
+            sub_exec.effects,
+            vec![Effect::ShowModal {
+                id: "ticket_form".to_owned(),
+                title: "New ticket for ada".to_owned(),
+                inputs: vec![RenderedModalInput {
+                    id: "topic".to_owned(),
+                    label: "Topic".to_owned(),
+                    style: TextInputStyle::Short,
+                    placeholder: None,
+                    required: true,
+                    min_length: None,
+                    max_length: None,
+                    value: None,
+                }],
+            }]
+        );
+
+        let modal_fields = [("topic".to_owned(), "Billing help".to_owned())];
+        let mut modal_ctx = context(&[], &[]);
+        modal_ctx.modal_fields = &modal_fields;
+        let modal_exec = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::ModalSubmit { id: "ticket_form" },
+                    context: modal_ctx,
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("modal matched");
+        assert_eq!(
+            modal_exec.effects,
+            vec![Effect::Reply {
+                message: MessagePayload::text("Ticket created: Billing help"),
+                ephemeral: true,
+            }]
+        );
+
+        let mut select_ctx = context(&[], &[]);
+        select_ctx.selected = Some("123456789012345678");
+        let role_exec = compiled
+            .handle(
+                &Event {
+                    kind: EventKind::SelectMenu { id: "role_picker" },
+                    context: select_ctx,
+                },
+                &saved,
+                &mut Highest,
+            )
+            .pop()
+            .expect("select menu matched");
+        assert_eq!(
+            role_exec.effects,
+            vec![Effect::AddRole {
+                role_id: 123_456_789_012_345_678
+            }]
+        );
+
+        let _ = ModalInputSpec {
+            id: "x".to_owned(),
+            label: "x".to_owned(),
+            style: TextInputStyle::Short,
+            placeholder: None,
+            required: true,
+            min_length: None,
+            max_length: None,
+            value: None,
+        };
     }
 }

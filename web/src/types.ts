@@ -12,22 +12,65 @@ export type ScheduleUnit = "minutes" | "hours" | "days";
 
 export type Trigger =
   | { type: "slash_command"; name: string; description: string; options: CommandOption[] }
+  | {
+      type: "slash_subcommand";
+      command: string;
+      group?: string;
+      subcommand: string;
+      description: string;
+      options: CommandOption[];
+    }
+  | { type: "user_command"; name: string }
+  | { type: "message_command"; name: string }
+  | { type: "modal_submit"; id: string }
   | { type: "member_join" }
   | { type: "member_leave" }
+  | { type: "member_update" }
+  | { type: "member_ban" }
+  | { type: "member_unban" }
   | { type: "message_contains"; pattern: string; case_sensitive: boolean }
+  | { type: "message_edit" }
+  | { type: "message_delete" }
   | { type: "reaction_add"; emoji?: string; message_id?: string }
   | { type: "reaction_remove"; emoji?: string; message_id?: string }
+  | { type: "thread_create" }
+  | { type: "invite_create" }
+  | { type: "automod_execution"; rule_id?: string }
+  | { type: "poll_vote_add" }
+  | { type: "voice_state_update" }
   | { type: "button_click"; id: string }
   | { type: "select_menu"; id: string }
   | { type: "schedule"; interval: number; unit: ScheduleUnit };
 
-export type OptionKind = "string" | "integer" | "boolean" | "user";
+export type OptionKind =
+  | "string"
+  | "integer"
+  | "number"
+  | "boolean"
+  | "user"
+  | "channel"
+  | "role"
+  | "mentionable"
+  | "attachment";
+
+export interface CommandOptionChoice {
+  name: string;
+  value: string;
+}
 
 export interface CommandOption {
   name: string;
   description: string;
   kind: OptionKind;
   required: boolean;
+  choices?: CommandOptionChoice[];
+  autocomplete?: string[];
+  min_value?: string;
+  max_value?: string;
+  min_length?: string;
+  max_length?: string;
+  channel_types?: ChannelFilter[];
+  file_types?: string[];
 }
 
 /** Where a variable lives: this run only, the member, or the whole server. */
@@ -43,6 +86,8 @@ export type CompareOp =
   | "greater"
   | "greater_or_equal"
   | "contains";
+
+export type TargetField = "id" | "mention" | "name" | "content" | "author_id" | "author_mention";
 
 export interface EmbedAuthor {
   name: string;
@@ -101,6 +146,17 @@ export interface SelectOption {
   default: boolean;
 }
 
+export type EntitySelectKind = "user" | "role" | "mentionable" | "channel";
+
+export type ChannelFilter =
+  | "text"
+  | "voice"
+  | "announcement"
+  | "forum"
+  | "stage"
+  | "category"
+  | "media";
+
 export type ComponentRow =
   | { type: "buttons"; buttons: ButtonSpec[] }
   | {
@@ -111,7 +167,47 @@ export type ComponentRow =
       max_values?: number;
       disabled: boolean;
       options: SelectOption[];
+    }
+  | {
+      type: "entity_select_menu";
+      id: string;
+      kind: EntitySelectKind;
+      placeholder?: string;
+      min_values?: number;
+      max_values?: number;
+      disabled: boolean;
+      channel_types?: ChannelFilter[];
     };
+
+export type TextInputStyle = "short" | "paragraph";
+
+export interface ModalInputSpec {
+  id: string;
+  label: string;
+  style: TextInputStyle;
+  placeholder?: string;
+  required: boolean;
+  min_length?: number;
+  max_length?: number;
+  value?: string;
+}
+
+export interface PollAnswerSpec {
+  text: string;
+  emoji?: string;
+}
+
+export interface PollSpec {
+  question: string;
+  answers: PollAnswerSpec[];
+  duration_hours: number;
+  allow_multiselect: boolean;
+}
+
+export interface AttachmentSpec {
+  filename: string;
+  content: string;
+}
 
 export type Statement =
   | {
@@ -120,6 +216,8 @@ export type Statement =
       ephemeral: boolean;
       embeds?: Embed[];
       components?: ComponentRow[];
+      poll?: PollSpec;
+      attachments?: AttachmentSpec[];
     }
   | {
       type: "send_message";
@@ -127,6 +225,9 @@ export type Statement =
       content: string;
       embeds?: Embed[];
       components?: ComponentRow[];
+      poll?: PollSpec;
+      attachments?: AttachmentSpec[];
+      reply_to_message_id?: string;
     }
   | {
       type: "update_message";
@@ -134,6 +235,38 @@ export type Statement =
       embeds?: Embed[];
       components?: ComponentRow[];
     }
+  | {
+      type: "show_modal";
+      id: string;
+      title: string;
+      inputs: ModalInputSpec[];
+    }
+  | {
+      type: "create_thread_from_message";
+      name: string;
+      auto_archive_minutes?: number;
+    }
+  | {
+      type: "create_thread";
+      channel_id: string;
+      name: string;
+      private: boolean;
+      auto_archive_minutes?: number;
+    }
+  | {
+      type: "create_forum_post";
+      channel_id: string;
+      title: string;
+      content: string;
+      embeds?: Embed[];
+    }
+  | { type: "join_thread"; thread_id: string }
+  | { type: "add_thread_member"; thread_id: string; member_id: string }
+  | { type: "remove_thread_member"; thread_id: string; member_id: string }
+  | { type: "pin_message"; channel_id: string; message_id: string }
+  | { type: "unpin_message"; channel_id: string; message_id: string }
+  | { type: "publish_message"; channel_id: string; message_id: string }
+  | { type: "bulk_delete_messages"; channel_id: string; count: number }
   | { type: "add_role"; role_id: string }
   | { type: "remove_role"; role_id: string }
   | { type: "timeout"; member_id: string; seconds: number; reason: string }
@@ -155,6 +288,8 @@ export type Expr =
   | { type: "variable"; scope: Scope; name: string }
   | { type: "option"; name: string }
   | { type: "selected" }
+  | { type: "modal_field"; id: string }
+  | { type: "target"; field: TargetField }
   | { type: "random"; min: Expr; max: Expr }
   | { type: "math"; op: MathOp; left: Expr; right: Expr }
   | { type: "compare"; op: CompareOp; left: Expr; right: Expr }
@@ -191,6 +326,39 @@ export interface BotDetail extends Bot {
 export interface BotIntents {
   members: boolean;
   message_content: boolean;
+}
+
+export interface BotChannelResource {
+  id: string;
+  name: string;
+  kind: string;
+  parent_id: string | null;
+}
+
+export interface BotRoleResource {
+  id: string;
+  name: string;
+  color: number;
+  managed: boolean;
+}
+
+export interface BotMemberResource {
+  id: string;
+  name: string;
+  username: string;
+}
+
+export interface BotGuildResources {
+  id: string;
+  name: string;
+  icon: string | null;
+  channels: BotChannelResource[];
+  roles: BotRoleResource[];
+  members: BotMemberResource[];
+}
+
+export interface BotResources {
+  guilds: BotGuildResources[];
 }
 
 export interface StepRef {
